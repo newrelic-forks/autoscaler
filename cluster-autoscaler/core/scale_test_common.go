@@ -111,7 +111,7 @@ func NewScaleTestAutoscalingContext(
 	listers kube_util.ListerRegistry, provider cloudprovider.CloudProvider,
 	processorCallbacks processor_callbacks.ProcessorCallbacks) context.AutoscalingContext {
 	fakeRecorder := kube_record.NewFakeRecorder(5)
-	fakeLogRecorder, _ := utils.NewStatusMapRecorder(fakeClient, "kube-system", fakeRecorder, false)
+	fakeLogRecorder, _ := utils.NewStatusMapRecorder(fakeClient, "kube-system", fakeRecorder, false, "my-cool-configmap")
 	// Ignoring error here is safe - if a test doesn't specify valid estimatorName,
 	// it either doesn't need one, or should fail when it turns out to be nil.
 	estimatorBuilder, _ := estimator.NewEstimatorBuilder(options.EstimatorName)
