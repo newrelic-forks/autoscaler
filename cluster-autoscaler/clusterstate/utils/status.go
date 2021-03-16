@@ -32,8 +32,6 @@ import (
 )
 
 const (
-	// StatusConfigMapName is the name of ConfigMap with status.
-	StatusConfigMapName = "cluster-autoscaler-status"
 	// ConfigMapLastUpdatedKey is the name of annotation informing about status ConfigMap last update.
 	ConfigMapLastUpdatedKey = "cluster-autoscaler.kubernetes.io/last-updated"
 	// ConfigMapLastUpdateFormat it the timestamp format used for last update annotation in status ConfigMap
