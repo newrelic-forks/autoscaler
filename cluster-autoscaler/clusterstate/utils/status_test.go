@@ -48,7 +48,7 @@ func setUpTest(t *testing.T) *testInfo {
 		configMap: &apiv1.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{
 				Namespace: namespace,
-				Name:      StatusConfigMapName,
+				Name:      "my-cool-configmap",
 			},
 			Data: map[string]string{},
 		},
@@ -61,7 +61,7 @@ func setUpTest(t *testing.T) *testInfo {
 	result.client.Fake.AddReactor("get", "configmaps", func(action core.Action) (bool, runtime.Object, error) {
 		get := action.(core.GetAction)
 		assert.Equal(result.t, namespace, get.GetNamespace())
-		assert.Equal(result.t, StatusConfigMapName, get.GetName())
+		assert.Equal(result.t, "my-cool-configmap", get.GetName())
 		result.getCalled = true
 		if result.getError != nil {
 			return true, nil, result.getError
@@ -78,7 +78,7 @@ func setUpTest(t *testing.T) *testInfo {
 		create := action.(core.CreateAction)
 		assert.Equal(result.t, namespace, create.GetNamespace())
 		configMap := create.GetObject().(*apiv1.ConfigMap)
-		assert.Equal(result.t, StatusConfigMapName, configMap.ObjectMeta.Name)
+		assert.Equal(result.t, "my-cool-configmap", configMap.ObjectMeta.Name)
 		result.createCalled = true
 		return true, configMap, nil
 	})
