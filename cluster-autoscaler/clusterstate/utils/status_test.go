@@ -87,7 +87,7 @@ func setUpTest(t *testing.T) *testInfo {
 
 func TestWriteStatusConfigMapExisting(t *testing.T) {
 	ti := setUpTest(t)
-	result, err := WriteStatusConfigMap(ti.client, ti.namespace, "TEST_MSG", nil)
+	result, err := WriteStatusConfigMap(ti.client, ti.namespace, "TEST_MSG", nil, "my-cool-configmap")
 	assert.Equal(t, ti.configMap, result)
 	assert.Contains(t, result.Data["status"], "TEST_MSG")
 	assert.Contains(t, result.ObjectMeta.Annotations, ConfigMapLastUpdatedKey)
@@ -100,7 +100,7 @@ func TestWriteStatusConfigMapExisting(t *testing.T) {
 func TestWriteStatusConfigMapCreate(t *testing.T) {
 	ti := setUpTest(t)
 	ti.getError = kube_errors.NewNotFound(apiv1.Resource("configmap"), "nope, not found")
-	result, err := WriteStatusConfigMap(ti.client, ti.namespace, "TEST_MSG", nil)
+	result, err := WriteStatusConfigMap(ti.client, ti.namespace, "TEST_MSG", nil, "my-cool-configmap")
 	assert.Contains(t, result.Data["status"], "TEST_MSG")
 	assert.Contains(t, result.ObjectMeta.Annotations, ConfigMapLastUpdatedKey)
 	assert.Nil(t, err)
@@ -112,7 +112,7 @@ func TestWriteStatusConfigMapCreate(t *testing.T) {
 func TestWriteStatusConfigMapError(t *testing.T) {
 	ti := setUpTest(t)
 	ti.getError = errors.New("stuff bad")
-	result, err := WriteStatusConfigMap(ti.client, ti.namespace, "TEST_MSG", nil)
+	result, err := WriteStatusConfigMap(ti.client, ti.namespace, "TEST_MSG", nil, "my-cool-configmap")
 	assert.NotNil(t, err)
 	assert.Contains(t, err.Error(), "stuff bad")
 	assert.Nil(t, result)
