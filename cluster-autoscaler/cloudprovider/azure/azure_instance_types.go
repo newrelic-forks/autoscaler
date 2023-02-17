@@ -28,70 +28,10 @@ type InstanceType struct {
 
 // InstanceTypes is a map of azure resources
 var InstanceTypes = map[string]*InstanceType{
-	"Basic_A0": {
-		InstanceType: "Basic_A0",
-		VCPU:         1,
-		MemoryMb:     0,
-		GPU:          0,
-	},
-	"Basic_A1": {
-		InstanceType: "Basic_A1",
-		VCPU:         1,
-		MemoryMb:     1024,
-		GPU:          0,
-	},
-	"Basic_A2": {
-		InstanceType: "Basic_A2",
-		VCPU:         2,
-		MemoryMb:     3072,
-		GPU:          0,
-	},
-	"Basic_A3": {
-		InstanceType: "Basic_A3",
-		VCPU:         4,
-		MemoryMb:     7168,
-		GPU:          0,
-	},
-	"Basic_A4": {
-		InstanceType: "Basic_A4",
-		VCPU:         8,
-		MemoryMb:     14336,
-		GPU:          0,
-	},
-	"Standard_A0": {
-		InstanceType: "Standard_A0",
-		VCPU:         1,
-		MemoryMb:     0,
-		GPU:          0,
-	},
-	"Standard_A1": {
-		InstanceType: "Standard_A1",
-		VCPU:         1,
-		MemoryMb:     1024,
-		GPU:          0,
-	},
-	"Standard_A10": {
-		InstanceType: "Standard_A10",
-		VCPU:         8,
-		MemoryMb:     57344,
-		GPU:          0,
-	},
-	"Standard_A11": {
-		InstanceType: "Standard_A11",
-		VCPU:         16,
-		MemoryMb:     114688,
-		GPU:          0,
-	},
 	"Standard_A1_v2": {
 		InstanceType: "Standard_A1_v2",
 		VCPU:         1,
 		MemoryMb:     2048,
-		GPU:          0,
-	},
-	"Standard_A2": {
-		InstanceType: "Standard_A2",
-		VCPU:         2,
-		MemoryMb:     3072,
 		GPU:          0,
 	},
 	"Standard_A2_v2": {
@@ -106,18 +46,6 @@ var InstanceTypes = map[string]*InstanceType{
 		MemoryMb:     16384,
 		GPU:          0,
 	},
-	"Standard_A3": {
-		InstanceType: "Standard_A3",
-		VCPU:         4,
-		MemoryMb:     7168,
-		GPU:          0,
-	},
-	"Standard_A4": {
-		InstanceType: "Standard_A4",
-		VCPU:         8,
-		MemoryMb:     14336,
-		GPU:          0,
-	},
 	"Standard_A4_v2": {
 		InstanceType: "Standard_A4_v2",
 		VCPU:         4,
@@ -130,30 +58,6 @@ var InstanceTypes = map[string]*InstanceType{
 		MemoryMb:     32768,
 		GPU:          0,
 	},
-	"Standard_A5": {
-		InstanceType: "Standard_A5",
-		VCPU:         2,
-		MemoryMb:     14336,
-		GPU:          0,
-	},
-	"Standard_A6": {
-		InstanceType: "Standard_A6",
-		VCPU:         4,
-		MemoryMb:     28672,
-		GPU:          0,
-	},
-	"Standard_A7": {
-		InstanceType: "Standard_A7",
-		VCPU:         8,
-		MemoryMb:     57344,
-		GPU:          0,
-	},
-	"Standard_A8": {
-		InstanceType: "Standard_A8",
-		VCPU:         8,
-		MemoryMb:     57344,
-		GPU:          0,
-	},
 	"Standard_A8_v2": {
 		InstanceType: "Standard_A8_v2",
 		VCPU:         8,
@@ -164,12 +68,6 @@ var InstanceTypes = map[string]*InstanceType{
 		InstanceType: "Standard_A8m_v2",
 		VCPU:         8,
 		MemoryMb:     65536,
-		GPU:          0,
-	},
-	"Standard_A9": {
-		InstanceType: "Standard_A9",
-		VCPU:         16,
-		MemoryMb:     114688,
 		GPU:          0,
 	},
 	"Standard_B12ms": {
@@ -334,12 +232,6 @@ var InstanceTypes = map[string]*InstanceType{
 		MemoryMb:     65536,
 		GPU:          0,
 	},
-	"Standard_D16a_v3": {
-		InstanceType: "Standard_D16a_v3",
-		VCPU:         16,
-		MemoryMb:     65536,
-		GPU:          0,
-	},
 	"Standard_D16a_v4": {
 		InstanceType: "Standard_D16a_v4",
 		VCPU:         16,
@@ -348,12 +240,6 @@ var InstanceTypes = map[string]*InstanceType{
 	},
 	"Standard_D16ads_v5": {
 		InstanceType: "Standard_D16ads_v5",
-		VCPU:         16,
-		MemoryMb:     65536,
-		GPU:          0,
-	},
-	"Standard_D16as_v3": {
-		InstanceType: "Standard_D16as_v3",
 		VCPU:         16,
 		MemoryMb:     65536,
 		GPU:          0,
@@ -390,6 +276,30 @@ var InstanceTypes = map[string]*InstanceType{
 	},
 	"Standard_D16ds_v5": {
 		InstanceType: "Standard_D16ds_v5",
+		VCPU:         16,
+		MemoryMb:     65536,
+		GPU:          0,
+	},
+	"Standard_D16pds_v5": {
+		InstanceType: "Standard_D16pds_v5",
+		VCPU:         16,
+		MemoryMb:     65536,
+		GPU:          0,
+	},
+	"Standard_D16plds_v5": {
+		InstanceType: "Standard_D16plds_v5",
+		VCPU:         16,
+		MemoryMb:     32768,
+		GPU:          0,
+	},
+	"Standard_D16pls_v5": {
+		InstanceType: "Standard_D16pls_v5",
+		VCPU:         16,
+		MemoryMb:     32768,
+		GPU:          0,
+	},
+	"Standard_D16ps_v5": {
+		InstanceType: "Standard_D16ps_v5",
 		VCPU:         16,
 		MemoryMb:     65536,
 		GPU:          0,
@@ -454,12 +364,6 @@ var InstanceTypes = map[string]*InstanceType{
 		MemoryMb:     8192,
 		GPU:          0,
 	},
-	"Standard_D2a_v3": {
-		InstanceType: "Standard_D2a_v3",
-		VCPU:         2,
-		MemoryMb:     8192,
-		GPU:          0,
-	},
 	"Standard_D2a_v4": {
 		InstanceType: "Standard_D2a_v4",
 		VCPU:         2,
@@ -468,12 +372,6 @@ var InstanceTypes = map[string]*InstanceType{
 	},
 	"Standard_D2ads_v5": {
 		InstanceType: "Standard_D2ads_v5",
-		VCPU:         2,
-		MemoryMb:     8192,
-		GPU:          0,
-	},
-	"Standard_D2as_v3": {
-		InstanceType: "Standard_D2as_v3",
 		VCPU:         2,
 		MemoryMb:     8192,
 		GPU:          0,
@@ -510,6 +408,30 @@ var InstanceTypes = map[string]*InstanceType{
 	},
 	"Standard_D2ds_v5": {
 		InstanceType: "Standard_D2ds_v5",
+		VCPU:         2,
+		MemoryMb:     8192,
+		GPU:          0,
+	},
+	"Standard_D2pds_v5": {
+		InstanceType: "Standard_D2pds_v5",
+		VCPU:         2,
+		MemoryMb:     8192,
+		GPU:          0,
+	},
+	"Standard_D2plds_v5": {
+		InstanceType: "Standard_D2plds_v5",
+		VCPU:         2,
+		MemoryMb:     4096,
+		GPU:          0,
+	},
+	"Standard_D2pls_v5": {
+		InstanceType: "Standard_D2pls_v5",
+		VCPU:         2,
+		MemoryMb:     4096,
+		GPU:          0,
+	},
+	"Standard_D2ps_v5": {
+		InstanceType: "Standard_D2ps_v5",
 		VCPU:         2,
 		MemoryMb:     8192,
 		GPU:          0,
@@ -556,12 +478,6 @@ var InstanceTypes = map[string]*InstanceType{
 		MemoryMb:     131072,
 		GPU:          0,
 	},
-	"Standard_D32a_v3": {
-		InstanceType: "Standard_D32a_v3",
-		VCPU:         32,
-		MemoryMb:     131072,
-		GPU:          0,
-	},
 	"Standard_D32a_v4": {
 		InstanceType: "Standard_D32a_v4",
 		VCPU:         32,
@@ -570,12 +486,6 @@ var InstanceTypes = map[string]*InstanceType{
 	},
 	"Standard_D32ads_v5": {
 		InstanceType: "Standard_D32ads_v5",
-		VCPU:         32,
-		MemoryMb:     131072,
-		GPU:          0,
-	},
-	"Standard_D32as_v3": {
-		InstanceType: "Standard_D32as_v3",
 		VCPU:         32,
 		MemoryMb:     131072,
 		GPU:          0,
@@ -612,6 +522,30 @@ var InstanceTypes = map[string]*InstanceType{
 	},
 	"Standard_D32ds_v5": {
 		InstanceType: "Standard_D32ds_v5",
+		VCPU:         32,
+		MemoryMb:     131072,
+		GPU:          0,
+	},
+	"Standard_D32pds_v5": {
+		InstanceType: "Standard_D32pds_v5",
+		VCPU:         32,
+		MemoryMb:     131072,
+		GPU:          0,
+	},
+	"Standard_D32plds_v5": {
+		InstanceType: "Standard_D32plds_v5",
+		VCPU:         32,
+		MemoryMb:     65536,
+		GPU:          0,
+	},
+	"Standard_D32pls_v5": {
+		InstanceType: "Standard_D32pls_v5",
+		VCPU:         32,
+		MemoryMb:     65536,
+		GPU:          0,
+	},
+	"Standard_D32ps_v5": {
+		InstanceType: "Standard_D32ps_v5",
 		VCPU:         32,
 		MemoryMb:     131072,
 		GPU:          0,
@@ -670,12 +604,6 @@ var InstanceTypes = map[string]*InstanceType{
 		MemoryMb:     196608,
 		GPU:          0,
 	},
-	"Standard_D48a_v3": {
-		InstanceType: "Standard_D48a_v3",
-		VCPU:         48,
-		MemoryMb:     196608,
-		GPU:          0,
-	},
 	"Standard_D48a_v4": {
 		InstanceType: "Standard_D48a_v4",
 		VCPU:         48,
@@ -684,12 +612,6 @@ var InstanceTypes = map[string]*InstanceType{
 	},
 	"Standard_D48ads_v5": {
 		InstanceType: "Standard_D48ads_v5",
-		VCPU:         48,
-		MemoryMb:     196608,
-		GPU:          0,
-	},
-	"Standard_D48as_v3": {
-		InstanceType: "Standard_D48as_v3",
 		VCPU:         48,
 		MemoryMb:     196608,
 		GPU:          0,
@@ -726,6 +648,30 @@ var InstanceTypes = map[string]*InstanceType{
 	},
 	"Standard_D48ds_v5": {
 		InstanceType: "Standard_D48ds_v5",
+		VCPU:         48,
+		MemoryMb:     196608,
+		GPU:          0,
+	},
+	"Standard_D48pds_v5": {
+		InstanceType: "Standard_D48pds_v5",
+		VCPU:         48,
+		MemoryMb:     196608,
+		GPU:          0,
+	},
+	"Standard_D48plds_v5": {
+		InstanceType: "Standard_D48plds_v5",
+		VCPU:         48,
+		MemoryMb:     98304,
+		GPU:          0,
+	},
+	"Standard_D48pls_v5": {
+		InstanceType: "Standard_D48pls_v5",
+		VCPU:         48,
+		MemoryMb:     98304,
+		GPU:          0,
+	},
+	"Standard_D48ps_v5": {
+		InstanceType: "Standard_D48ps_v5",
 		VCPU:         48,
 		MemoryMb:     196608,
 		GPU:          0,
@@ -778,12 +724,6 @@ var InstanceTypes = map[string]*InstanceType{
 		MemoryMb:     16384,
 		GPU:          0,
 	},
-	"Standard_D4a_v3": {
-		InstanceType: "Standard_D4a_v3",
-		VCPU:         4,
-		MemoryMb:     16384,
-		GPU:          0,
-	},
 	"Standard_D4a_v4": {
 		InstanceType: "Standard_D4a_v4",
 		VCPU:         4,
@@ -792,12 +732,6 @@ var InstanceTypes = map[string]*InstanceType{
 	},
 	"Standard_D4ads_v5": {
 		InstanceType: "Standard_D4ads_v5",
-		VCPU:         4,
-		MemoryMb:     16384,
-		GPU:          0,
-	},
-	"Standard_D4as_v3": {
-		InstanceType: "Standard_D4as_v3",
 		VCPU:         4,
 		MemoryMb:     16384,
 		GPU:          0,
@@ -834,6 +768,30 @@ var InstanceTypes = map[string]*InstanceType{
 	},
 	"Standard_D4ds_v5": {
 		InstanceType: "Standard_D4ds_v5",
+		VCPU:         4,
+		MemoryMb:     16384,
+		GPU:          0,
+	},
+	"Standard_D4pds_v5": {
+		InstanceType: "Standard_D4pds_v5",
+		VCPU:         4,
+		MemoryMb:     16384,
+		GPU:          0,
+	},
+	"Standard_D4plds_v5": {
+		InstanceType: "Standard_D4plds_v5",
+		VCPU:         4,
+		MemoryMb:     8192,
+		GPU:          0,
+	},
+	"Standard_D4pls_v5": {
+		InstanceType: "Standard_D4pls_v5",
+		VCPU:         4,
+		MemoryMb:     8192,
+		GPU:          0,
+	},
+	"Standard_D4ps_v5": {
+		InstanceType: "Standard_D4ps_v5",
 		VCPU:         4,
 		MemoryMb:     16384,
 		GPU:          0,
@@ -886,12 +844,6 @@ var InstanceTypes = map[string]*InstanceType{
 		MemoryMb:     262144,
 		GPU:          0,
 	},
-	"Standard_D64a_v3": {
-		InstanceType: "Standard_D64a_v3",
-		VCPU:         64,
-		MemoryMb:     262144,
-		GPU:          0,
-	},
 	"Standard_D64a_v4": {
 		InstanceType: "Standard_D64a_v4",
 		VCPU:         64,
@@ -900,12 +852,6 @@ var InstanceTypes = map[string]*InstanceType{
 	},
 	"Standard_D64ads_v5": {
 		InstanceType: "Standard_D64ads_v5",
-		VCPU:         64,
-		MemoryMb:     262144,
-		GPU:          0,
-	},
-	"Standard_D64as_v3": {
-		InstanceType: "Standard_D64as_v3",
 		VCPU:         64,
 		MemoryMb:     262144,
 		GPU:          0,
@@ -946,6 +892,30 @@ var InstanceTypes = map[string]*InstanceType{
 		MemoryMb:     262144,
 		GPU:          0,
 	},
+	"Standard_D64pds_v5": {
+		InstanceType: "Standard_D64pds_v5",
+		VCPU:         64,
+		MemoryMb:     212992,
+		GPU:          0,
+	},
+	"Standard_D64plds_v5": {
+		InstanceType: "Standard_D64plds_v5",
+		VCPU:         64,
+		MemoryMb:     131072,
+		GPU:          0,
+	},
+	"Standard_D64pls_v5": {
+		InstanceType: "Standard_D64pls_v5",
+		VCPU:         64,
+		MemoryMb:     131072,
+		GPU:          0,
+	},
+	"Standard_D64ps_v5": {
+		InstanceType: "Standard_D64ps_v5",
+		VCPU:         64,
+		MemoryMb:     212992,
+		GPU:          0,
+	},
 	"Standard_D64s_v3": {
 		InstanceType: "Standard_D64s_v3",
 		VCPU:         64,
@@ -982,12 +952,6 @@ var InstanceTypes = map[string]*InstanceType{
 		MemoryMb:     32768,
 		GPU:          0,
 	},
-	"Standard_D8a_v3": {
-		InstanceType: "Standard_D8a_v3",
-		VCPU:         8,
-		MemoryMb:     32768,
-		GPU:          0,
-	},
 	"Standard_D8a_v4": {
 		InstanceType: "Standard_D8a_v4",
 		VCPU:         8,
@@ -996,12 +960,6 @@ var InstanceTypes = map[string]*InstanceType{
 	},
 	"Standard_D8ads_v5": {
 		InstanceType: "Standard_D8ads_v5",
-		VCPU:         8,
-		MemoryMb:     32768,
-		GPU:          0,
-	},
-	"Standard_D8as_v3": {
-		InstanceType: "Standard_D8as_v3",
 		VCPU:         8,
 		MemoryMb:     32768,
 		GPU:          0,
@@ -1038,6 +996,30 @@ var InstanceTypes = map[string]*InstanceType{
 	},
 	"Standard_D8ds_v5": {
 		InstanceType: "Standard_D8ds_v5",
+		VCPU:         8,
+		MemoryMb:     32768,
+		GPU:          0,
+	},
+	"Standard_D8pds_v5": {
+		InstanceType: "Standard_D8pds_v5",
+		VCPU:         8,
+		MemoryMb:     32768,
+		GPU:          0,
+	},
+	"Standard_D8plds_v5": {
+		InstanceType: "Standard_D8plds_v5",
+		VCPU:         8,
+		MemoryMb:     16384,
+		GPU:          0,
+	},
+	"Standard_D8pls_v5": {
+		InstanceType: "Standard_D8pls_v5",
+		VCPU:         8,
+		MemoryMb:     16384,
+		GPU:          0,
+	},
+	"Standard_D8ps_v5": {
+		InstanceType: "Standard_D8ps_v5",
 		VCPU:         8,
 		MemoryMb:     32768,
 		GPU:          0,
@@ -1180,12 +1162,6 @@ var InstanceTypes = map[string]*InstanceType{
 		MemoryMb:     16384,
 		GPU:          0,
 	},
-	"Standard_DC2s": {
-		InstanceType: "Standard_DC2s",
-		VCPU:         2,
-		MemoryMb:     8192,
-		GPU:          0,
-	},
 	"Standard_DC2s_v2": {
 		InstanceType: "Standard_DC2s_v2",
 		VCPU:         2,
@@ -1262,12 +1238,6 @@ var InstanceTypes = map[string]*InstanceType{
 		InstanceType: "Standard_DC4ds_v3",
 		VCPU:         4,
 		MemoryMb:     32768,
-		GPU:          0,
-	},
-	"Standard_DC4s": {
-		InstanceType: "Standard_DC4s",
-		VCPU:         4,
-		MemoryMb:     16384,
 		GPU:          0,
 	},
 	"Standard_DC4s_v2": {
@@ -1558,6 +1528,18 @@ var InstanceTypes = map[string]*InstanceType{
 		MemoryMb:     688128,
 		GPU:          0,
 	},
+	"Standard_E112iads_v5": {
+		InstanceType: "Standard_E112iads_v5",
+		VCPU:         112,
+		MemoryMb:     688128,
+		GPU:          0,
+	},
+	"Standard_E112ias_v5": {
+		InstanceType: "Standard_E112ias_v5",
+		VCPU:         112,
+		MemoryMb:     688128,
+		GPU:          0,
+	},
 	"Standard_E16-4ads_v5": {
 		InstanceType: "Standard_E16-4ads_v5",
 		VCPU:         16,
@@ -1696,6 +1678,18 @@ var InstanceTypes = map[string]*InstanceType{
 		MemoryMb:     131072,
 		GPU:          0,
 	},
+	"Standard_E16bds_v5": {
+		InstanceType: "Standard_E16bds_v5",
+		VCPU:         16,
+		MemoryMb:     131072,
+		GPU:          0,
+	},
+	"Standard_E16bs_v5": {
+		InstanceType: "Standard_E16bs_v5",
+		VCPU:         16,
+		MemoryMb:     131072,
+		GPU:          0,
+	},
 	"Standard_E16d_v4": {
 		InstanceType: "Standard_E16d_v4",
 		VCPU:         16,
@@ -1716,6 +1710,18 @@ var InstanceTypes = map[string]*InstanceType{
 	},
 	"Standard_E16ds_v5": {
 		InstanceType: "Standard_E16ds_v5",
+		VCPU:         16,
+		MemoryMb:     131072,
+		GPU:          0,
+	},
+	"Standard_E16pds_v5": {
+		InstanceType: "Standard_E16pds_v5",
+		VCPU:         16,
+		MemoryMb:     131072,
+		GPU:          0,
+	},
+	"Standard_E16ps_v5": {
+		InstanceType: "Standard_E16ps_v5",
 		VCPU:         16,
 		MemoryMb:     131072,
 		GPU:          0,
@@ -1804,6 +1810,18 @@ var InstanceTypes = map[string]*InstanceType{
 		MemoryMb:     163840,
 		GPU:          0,
 	},
+	"Standard_E20pds_v5": {
+		InstanceType: "Standard_E20pds_v5",
+		VCPU:         20,
+		MemoryMb:     163840,
+		GPU:          0,
+	},
+	"Standard_E20ps_v5": {
+		InstanceType: "Standard_E20ps_v5",
+		VCPU:         20,
+		MemoryMb:     163840,
+		GPU:          0,
+	},
 	"Standard_E20s_v3": {
 		InstanceType: "Standard_E20s_v3",
 		VCPU:         20,
@@ -1864,6 +1882,18 @@ var InstanceTypes = map[string]*InstanceType{
 		MemoryMb:     16384,
 		GPU:          0,
 	},
+	"Standard_E2bds_v5": {
+		InstanceType: "Standard_E2bds_v5",
+		VCPU:         2,
+		MemoryMb:     16384,
+		GPU:          0,
+	},
+	"Standard_E2bs_v5": {
+		InstanceType: "Standard_E2bs_v5",
+		VCPU:         2,
+		MemoryMb:     16384,
+		GPU:          0,
+	},
 	"Standard_E2d_v4": {
 		InstanceType: "Standard_E2d_v4",
 		VCPU:         2,
@@ -1884,6 +1914,18 @@ var InstanceTypes = map[string]*InstanceType{
 	},
 	"Standard_E2ds_v5": {
 		InstanceType: "Standard_E2ds_v5",
+		VCPU:         2,
+		MemoryMb:     16384,
+		GPU:          0,
+	},
+	"Standard_E2pds_v5": {
+		InstanceType: "Standard_E2pds_v5",
+		VCPU:         2,
+		MemoryMb:     16384,
+		GPU:          0,
+	},
+	"Standard_E2ps_v5": {
+		InstanceType: "Standard_E2ps_v5",
 		VCPU:         2,
 		MemoryMb:     16384,
 		GPU:          0,
@@ -2044,6 +2086,18 @@ var InstanceTypes = map[string]*InstanceType{
 		MemoryMb:     262144,
 		GPU:          0,
 	},
+	"Standard_E32bds_v5": {
+		InstanceType: "Standard_E32bds_v5",
+		VCPU:         32,
+		MemoryMb:     262144,
+		GPU:          0,
+	},
+	"Standard_E32bs_v5": {
+		InstanceType: "Standard_E32bs_v5",
+		VCPU:         32,
+		MemoryMb:     262144,
+		GPU:          0,
+	},
 	"Standard_E32d_v4": {
 		InstanceType: "Standard_E32d_v4",
 		VCPU:         32,
@@ -2066,6 +2120,18 @@ var InstanceTypes = map[string]*InstanceType{
 		InstanceType: "Standard_E32ds_v5",
 		VCPU:         32,
 		MemoryMb:     262144,
+		GPU:          0,
+	},
+	"Standard_E32pds_v5": {
+		InstanceType: "Standard_E32pds_v5",
+		VCPU:         32,
+		MemoryMb:     212992,
+		GPU:          0,
+	},
+	"Standard_E32ps_v5": {
+		InstanceType: "Standard_E32ps_v5",
+		VCPU:         32,
+		MemoryMb:     212992,
 		GPU:          0,
 	},
 	"Standard_E32s_v3": {
@@ -2176,6 +2242,18 @@ var InstanceTypes = map[string]*InstanceType{
 		MemoryMb:     393216,
 		GPU:          0,
 	},
+	"Standard_E48bds_v5": {
+		InstanceType: "Standard_E48bds_v5",
+		VCPU:         48,
+		MemoryMb:     393216,
+		GPU:          0,
+	},
+	"Standard_E48bs_v5": {
+		InstanceType: "Standard_E48bs_v5",
+		VCPU:         48,
+		MemoryMb:     393216,
+		GPU:          0,
+	},
 	"Standard_E48d_v4": {
 		InstanceType: "Standard_E48d_v4",
 		VCPU:         48,
@@ -2260,6 +2338,18 @@ var InstanceTypes = map[string]*InstanceType{
 		MemoryMb:     32768,
 		GPU:          0,
 	},
+	"Standard_E4bds_v5": {
+		InstanceType: "Standard_E4bds_v5",
+		VCPU:         4,
+		MemoryMb:     32768,
+		GPU:          0,
+	},
+	"Standard_E4bs_v5": {
+		InstanceType: "Standard_E4bs_v5",
+		VCPU:         4,
+		MemoryMb:     32768,
+		GPU:          0,
+	},
 	"Standard_E4d_v4": {
 		InstanceType: "Standard_E4d_v4",
 		VCPU:         4,
@@ -2280,6 +2370,18 @@ var InstanceTypes = map[string]*InstanceType{
 	},
 	"Standard_E4ds_v5": {
 		InstanceType: "Standard_E4ds_v5",
+		VCPU:         4,
+		MemoryMb:     32768,
+		GPU:          0,
+	},
+	"Standard_E4pds_v5": {
+		InstanceType: "Standard_E4pds_v5",
+		VCPU:         4,
+		MemoryMb:     32768,
+		GPU:          0,
+	},
+	"Standard_E4ps_v5": {
+		InstanceType: "Standard_E4ps_v5",
 		VCPU:         4,
 		MemoryMb:     32768,
 		GPU:          0,
@@ -2436,6 +2538,18 @@ var InstanceTypes = map[string]*InstanceType{
 	},
 	"Standard_E64as_v5": {
 		InstanceType: "Standard_E64as_v5",
+		VCPU:         64,
+		MemoryMb:     524288,
+		GPU:          0,
+	},
+	"Standard_E64bds_v5": {
+		InstanceType: "Standard_E64bds_v5",
+		VCPU:         64,
+		MemoryMb:     524288,
+		GPU:          0,
+	},
+	"Standard_E64bs_v5": {
+		InstanceType: "Standard_E64bs_v5",
 		VCPU:         64,
 		MemoryMb:     524288,
 		GPU:          0,
@@ -2644,6 +2758,18 @@ var InstanceTypes = map[string]*InstanceType{
 		MemoryMb:     65536,
 		GPU:          0,
 	},
+	"Standard_E8bds_v5": {
+		InstanceType: "Standard_E8bds_v5",
+		VCPU:         8,
+		MemoryMb:     65536,
+		GPU:          0,
+	},
+	"Standard_E8bs_v5": {
+		InstanceType: "Standard_E8bs_v5",
+		VCPU:         8,
+		MemoryMb:     65536,
+		GPU:          0,
+	},
 	"Standard_E8d_v4": {
 		InstanceType: "Standard_E8d_v4",
 		VCPU:         8,
@@ -2664,6 +2790,18 @@ var InstanceTypes = map[string]*InstanceType{
 	},
 	"Standard_E8ds_v5": {
 		InstanceType: "Standard_E8ds_v5",
+		VCPU:         8,
+		MemoryMb:     65536,
+		GPU:          0,
+	},
+	"Standard_E8pds_v5": {
+		InstanceType: "Standard_E8pds_v5",
+		VCPU:         8,
+		MemoryMb:     65536,
+		GPU:          0,
+	},
+	"Standard_E8ps_v5": {
+		InstanceType: "Standard_E8ps_v5",
 		VCPU:         8,
 		MemoryMb:     65536,
 		GPU:          0,
@@ -2784,6 +2922,12 @@ var InstanceTypes = map[string]*InstanceType{
 	},
 	"Standard_E96ds_v5": {
 		InstanceType: "Standard_E96ds_v5",
+		VCPU:         96,
+		MemoryMb:     688128,
+		GPU:          0,
+	},
+	"Standard_E96ias_v4": {
+		InstanceType: "Standard_E96ias_v4",
 		VCPU:         96,
 		MemoryMb:     688128,
 		GPU:          0,
@@ -3136,76 +3280,10 @@ var InstanceTypes = map[string]*InstanceType{
 		MemoryMb:     458752,
 		GPU:          0,
 	},
-	"Standard_H16": {
-		InstanceType: "Standard_H16",
-		VCPU:         16,
-		MemoryMb:     114688,
-		GPU:          0,
-	},
-	"Standard_H16_Promo": {
-		InstanceType: "Standard_H16_Promo",
-		VCPU:         16,
-		MemoryMb:     114688,
-		GPU:          0,
-	},
-	"Standard_H16m": {
-		InstanceType: "Standard_H16m",
-		VCPU:         16,
-		MemoryMb:     229376,
-		GPU:          0,
-	},
-	"Standard_H16m_Promo": {
-		InstanceType: "Standard_H16m_Promo",
-		VCPU:         16,
-		MemoryMb:     229376,
-		GPU:          0,
-	},
-	"Standard_H16mr": {
-		InstanceType: "Standard_H16mr",
-		VCPU:         16,
-		MemoryMb:     229376,
-		GPU:          0,
-	},
-	"Standard_H16mr_Promo": {
-		InstanceType: "Standard_H16mr_Promo",
-		VCPU:         16,
-		MemoryMb:     229376,
-		GPU:          0,
-	},
-	"Standard_H16r": {
-		InstanceType: "Standard_H16r",
-		VCPU:         16,
-		MemoryMb:     114688,
-		GPU:          0,
-	},
-	"Standard_H16r_Promo": {
-		InstanceType: "Standard_H16r_Promo",
-		VCPU:         16,
-		MemoryMb:     114688,
-		GPU:          0,
-	},
-	"Standard_H8": {
-		InstanceType: "Standard_H8",
-		VCPU:         8,
-		MemoryMb:     57344,
-		GPU:          0,
-	},
-	"Standard_H8_Promo": {
-		InstanceType: "Standard_H8_Promo",
-		VCPU:         8,
-		MemoryMb:     57344,
-		GPU:          0,
-	},
-	"Standard_H8m": {
-		InstanceType: "Standard_H8m",
-		VCPU:         8,
-		MemoryMb:     114688,
-		GPU:          0,
-	},
-	"Standard_H8m_Promo": {
-		InstanceType: "Standard_H8m_Promo",
-		VCPU:         8,
-		MemoryMb:     114688,
+	"Standard_HB120-16rs_v2": {
+		InstanceType: "Standard_HB120-16rs_v2",
+		VCPU:         120,
+		MemoryMb:     466944,
 		GPU:          0,
 	},
 	"Standard_HB120-16rs_v3": {
@@ -3214,16 +3292,34 @@ var InstanceTypes = map[string]*InstanceType{
 		MemoryMb:     458752,
 		GPU:          0,
 	},
+	"Standard_HB120-32rs_v2": {
+		InstanceType: "Standard_HB120-32rs_v2",
+		VCPU:         120,
+		MemoryMb:     466944,
+		GPU:          0,
+	},
 	"Standard_HB120-32rs_v3": {
 		InstanceType: "Standard_HB120-32rs_v3",
 		VCPU:         120,
 		MemoryMb:     458752,
 		GPU:          0,
 	},
+	"Standard_HB120-64rs_v2": {
+		InstanceType: "Standard_HB120-64rs_v2",
+		VCPU:         120,
+		MemoryMb:     466944,
+		GPU:          0,
+	},
 	"Standard_HB120-64rs_v3": {
 		InstanceType: "Standard_HB120-64rs_v3",
 		VCPU:         120,
 		MemoryMb:     458752,
+		GPU:          0,
+	},
+	"Standard_HB120-96rs_v2": {
+		InstanceType: "Standard_HB120-96rs_v2",
+		VCPU:         120,
+		MemoryMb:     466944,
 		GPU:          0,
 	},
 	"Standard_HB120-96rs_v3": {
@@ -3244,16 +3340,28 @@ var InstanceTypes = map[string]*InstanceType{
 		MemoryMb:     458752,
 		GPU:          0,
 	},
-	"Standard_HB60rs": {
-		InstanceType: "Standard_HB60rs",
-		VCPU:         60,
-		MemoryMb:     233472,
+	"Standard_HC44-16rs": {
+		InstanceType: "Standard_HC44-16rs",
+		VCPU:         44,
+		MemoryMb:     360448,
+		GPU:          0,
+	},
+	"Standard_HC44-32rs": {
+		InstanceType: "Standard_HC44-32rs",
+		VCPU:         44,
+		MemoryMb:     360448,
 		GPU:          0,
 	},
 	"Standard_HC44rs": {
 		InstanceType: "Standard_HC44rs",
 		VCPU:         44,
 		MemoryMb:     360448,
+		GPU:          0,
+	},
+	"Standard_L16as_v3": {
+		InstanceType: "Standard_L16as_v3",
+		VCPU:         16,
+		MemoryMb:     131072,
 		GPU:          0,
 	},
 	"Standard_L16s": {
@@ -3268,6 +3376,18 @@ var InstanceTypes = map[string]*InstanceType{
 		MemoryMb:     131072,
 		GPU:          0,
 	},
+	"Standard_L16s_v3": {
+		InstanceType: "Standard_L16s_v3",
+		VCPU:         16,
+		MemoryMb:     131072,
+		GPU:          0,
+	},
+	"Standard_L32as_v3": {
+		InstanceType: "Standard_L32as_v3",
+		VCPU:         32,
+		MemoryMb:     262144,
+		GPU:          0,
+	},
 	"Standard_L32s": {
 		InstanceType: "Standard_L32s",
 		VCPU:         32,
@@ -3280,8 +3400,26 @@ var InstanceTypes = map[string]*InstanceType{
 		MemoryMb:     262144,
 		GPU:          0,
 	},
+	"Standard_L32s_v3": {
+		InstanceType: "Standard_L32s_v3",
+		VCPU:         32,
+		MemoryMb:     262144,
+		GPU:          0,
+	},
+	"Standard_L48as_v3": {
+		InstanceType: "Standard_L48as_v3",
+		VCPU:         48,
+		MemoryMb:     393216,
+		GPU:          0,
+	},
 	"Standard_L48s_v2": {
 		InstanceType: "Standard_L48s_v2",
+		VCPU:         48,
+		MemoryMb:     393216,
+		GPU:          0,
+	},
+	"Standard_L48s_v3": {
+		InstanceType: "Standard_L48s_v3",
 		VCPU:         48,
 		MemoryMb:     393216,
 		GPU:          0,
@@ -3292,16 +3430,46 @@ var InstanceTypes = map[string]*InstanceType{
 		MemoryMb:     32768,
 		GPU:          0,
 	},
+	"Standard_L64as_v3": {
+		InstanceType: "Standard_L64as_v3",
+		VCPU:         64,
+		MemoryMb:     524288,
+		GPU:          0,
+	},
 	"Standard_L64s_v2": {
 		InstanceType: "Standard_L64s_v2",
 		VCPU:         64,
 		MemoryMb:     524288,
 		GPU:          0,
 	},
+	"Standard_L64s_v3": {
+		InstanceType: "Standard_L64s_v3",
+		VCPU:         64,
+		MemoryMb:     524288,
+		GPU:          0,
+	},
+	"Standard_L80as_v3": {
+		InstanceType: "Standard_L80as_v3",
+		VCPU:         80,
+		MemoryMb:     655360,
+		GPU:          0,
+	},
 	"Standard_L80s_v2": {
 		InstanceType: "Standard_L80s_v2",
 		VCPU:         80,
 		MemoryMb:     655360,
+		GPU:          0,
+	},
+	"Standard_L80s_v3": {
+		InstanceType: "Standard_L80s_v3",
+		VCPU:         80,
+		MemoryMb:     655360,
+		GPU:          0,
+	},
+	"Standard_L8as_v3": {
+		InstanceType: "Standard_L8as_v3",
+		VCPU:         8,
+		MemoryMb:     65536,
 		GPU:          0,
 	},
 	"Standard_L8s": {
@@ -3312,6 +3480,12 @@ var InstanceTypes = map[string]*InstanceType{
 	},
 	"Standard_L8s_v2": {
 		InstanceType: "Standard_L8s_v2",
+		VCPU:         8,
+		MemoryMb:     65536,
+		GPU:          0,
+	},
+	"Standard_L8s_v3": {
+		InstanceType: "Standard_L8s_v3",
 		VCPU:         8,
 		MemoryMb:     65536,
 		GPU:          0,
@@ -3553,7 +3727,7 @@ var InstanceTypes = map[string]*InstanceType{
 	"Standard_M64s": {
 		InstanceType: "Standard_M64s",
 		VCPU:         64,
-		MemoryMb:     1024000,
+		MemoryMb:     1048576,
 		GPU:          0,
 	},
 	"Standard_M64s_v2": {
@@ -3580,29 +3754,17 @@ var InstanceTypes = map[string]*InstanceType{
 		MemoryMb:     223232,
 		GPU:          0,
 	},
-	"Standard_NC12": {
-		InstanceType: "Standard_NC12",
-		VCPU:         12,
-		MemoryMb:     114688,
-		GPU:          2,
-	},
-	"Standard_NC12_Promo": {
-		InstanceType: "Standard_NC12_Promo",
-		VCPU:         12,
-		MemoryMb:     114688,
-		GPU:          2,
-	},
-	"Standard_NC12s_v2": {
-		InstanceType: "Standard_NC12s_v2",
-		VCPU:         12,
-		MemoryMb:     229376,
-		GPU:          2,
-	},
 	"Standard_NC12s_v3": {
 		InstanceType: "Standard_NC12s_v3",
 		VCPU:         12,
 		MemoryMb:     229376,
 		GPU:          2,
+	},
+	"Standard_NC16ads_A10_v4": {
+		InstanceType: "Standard_NC16ads_A10_v4",
+		VCPU:         16,
+		MemoryMb:     204800,
+		GPU:          1,
 	},
 	"Standard_NC16as_T4_v3": {
 		InstanceType: "Standard_NC16as_T4_v3",
@@ -3610,44 +3772,14 @@ var InstanceTypes = map[string]*InstanceType{
 		MemoryMb:     112640,
 		GPU:          1,
 	},
-	"Standard_NC24": {
-		InstanceType: "Standard_NC24",
+	"Standard_NC24ads_A100_v4": {
+		InstanceType: "Standard_NC24ads_A100_v4",
 		VCPU:         24,
-		MemoryMb:     229376,
-		GPU:          4,
-	},
-	"Standard_NC24_Promo": {
-		InstanceType: "Standard_NC24_Promo",
-		VCPU:         24,
-		MemoryMb:     229376,
-		GPU:          4,
-	},
-	"Standard_NC24r": {
-		InstanceType: "Standard_NC24r",
-		VCPU:         24,
-		MemoryMb:     229376,
-		GPU:          4,
-	},
-	"Standard_NC24r_Promo": {
-		InstanceType: "Standard_NC24r_Promo",
-		VCPU:         24,
-		MemoryMb:     229376,
-		GPU:          4,
-	},
-	"Standard_NC24rs_v2": {
-		InstanceType: "Standard_NC24rs_v2",
-		VCPU:         24,
-		MemoryMb:     458752,
-		GPU:          4,
+		MemoryMb:     225280,
+		GPU:          1,
 	},
 	"Standard_NC24rs_v3": {
 		InstanceType: "Standard_NC24rs_v3",
-		VCPU:         24,
-		MemoryMb:     458752,
-		GPU:          4,
-	},
-	"Standard_NC24s_v2": {
-		InstanceType: "Standard_NC24s_v2",
 		VCPU:         24,
 		MemoryMb:     458752,
 		GPU:          4,
@@ -3658,16 +3790,22 @@ var InstanceTypes = map[string]*InstanceType{
 		MemoryMb:     458752,
 		GPU:          4,
 	},
+	"Standard_NC32ads_A10_v4": {
+		InstanceType: "Standard_NC32ads_A10_v4",
+		VCPU:         32,
+		MemoryMb:     409600,
+		GPU:          2,
+	},
+	"Standard_NC48ads_A100_v4": {
+		InstanceType: "Standard_NC48ads_A100_v4",
+		VCPU:         48,
+		MemoryMb:     450560,
+		GPU:          2,
+	},
 	"Standard_NC4as_T4_v3": {
 		InstanceType: "Standard_NC4as_T4_v3",
 		VCPU:         4,
 		MemoryMb:     28672,
-		GPU:          1,
-	},
-	"Standard_NC6": {
-		InstanceType: "Standard_NC6",
-		VCPU:         6,
-		MemoryMb:     57344,
 		GPU:          1,
 	},
 	"Standard_NC64as_T4_v3": {
@@ -3676,22 +3814,16 @@ var InstanceTypes = map[string]*InstanceType{
 		MemoryMb:     450560,
 		GPU:          4,
 	},
-	"Standard_NC6_Promo": {
-		InstanceType: "Standard_NC6_Promo",
-		VCPU:         6,
-		MemoryMb:     57344,
-		GPU:          1,
-	},
-	"Standard_NC6s_v2": {
-		InstanceType: "Standard_NC6s_v2",
-		VCPU:         6,
-		MemoryMb:     114688,
-		GPU:          1,
-	},
 	"Standard_NC6s_v3": {
 		InstanceType: "Standard_NC6s_v3",
 		VCPU:         6,
 		MemoryMb:     114688,
+		GPU:          1,
+	},
+	"Standard_NC8ads_A10_v4": {
+		InstanceType: "Standard_NC8ads_A10_v4",
+		VCPU:         8,
+		MemoryMb:     102400,
 		GPU:          1,
 	},
 	"Standard_NC8as_T4_v3": {
@@ -3700,22 +3832,10 @@ var InstanceTypes = map[string]*InstanceType{
 		MemoryMb:     57344,
 		GPU:          1,
 	},
-	"Standard_ND12s": {
-		InstanceType: "Standard_ND12s",
-		VCPU:         12,
-		MemoryMb:     229376,
-		GPU:          2,
-	},
-	"Standard_ND24rs": {
-		InstanceType: "Standard_ND24rs",
-		VCPU:         24,
-		MemoryMb:     458752,
-		GPU:          4,
-	},
-	"Standard_ND24s": {
-		InstanceType: "Standard_ND24s",
-		VCPU:         24,
-		MemoryMb:     458752,
+	"Standard_NC96ads_A100_v4": {
+		InstanceType: "Standard_NC96ads_A100_v4",
+		VCPU:         96,
+		MemoryMb:     901120,
 		GPU:          4,
 	},
 	"Standard_ND40rs_v2": {
@@ -3724,29 +3844,41 @@ var InstanceTypes = map[string]*InstanceType{
 		MemoryMb:     688128,
 		GPU:          8,
 	},
-	"Standard_ND6s": {
-		InstanceType: "Standard_ND6s",
-		VCPU:         6,
-		MemoryMb:     114688,
-		GPU:          1,
-	},
 	"Standard_ND96amsr_A100_v4": {
 		InstanceType: "Standard_ND96amsr_A100_v4",
 		VCPU:         96,
 		MemoryMb:     1970176,
 		GPU:          8,
 	},
-	"Standard_NV12": {
-		InstanceType: "Standard_NV12",
-		VCPU:         12,
-		MemoryMb:     114688,
+	"Standard_ND96asr_v4": {
+		InstanceType: "Standard_ND96asr_v4",
+		VCPU:         96,
+		MemoryMb:     921600,
+		GPU:          8,
+	},
+	"Standard_NP10s": {
+		InstanceType: "Standard_NP10s",
+		VCPU:         10,
+		MemoryMb:     172032,
+		GPU:          1,
+	},
+	"Standard_NP20s": {
+		InstanceType: "Standard_NP20s",
+		VCPU:         20,
+		MemoryMb:     344064,
 		GPU:          2,
 	},
-	"Standard_NV12_Promo": {
-		InstanceType: "Standard_NV12_Promo",
+	"Standard_NP40s": {
+		InstanceType: "Standard_NP40s",
+		VCPU:         40,
+		MemoryMb:     688128,
+		GPU:          4,
+	},
+	"Standard_NV12ads_A10_v5": {
+		InstanceType: "Standard_NV12ads_A10_v5",
 		VCPU:         12,
-		MemoryMb:     114688,
-		GPU:          2,
+		MemoryMb:     112640,
+		GPU:          1,
 	},
 	"Standard_NV12s_v2": {
 		InstanceType: "Standard_NV12s_v2",
@@ -3766,17 +3898,11 @@ var InstanceTypes = map[string]*InstanceType{
 		MemoryMb:     57344,
 		GPU:          1,
 	},
-	"Standard_NV24": {
-		InstanceType: "Standard_NV24",
-		VCPU:         24,
-		MemoryMb:     229376,
-		GPU:          4,
-	},
-	"Standard_NV24_Promo": {
-		InstanceType: "Standard_NV24_Promo",
-		VCPU:         24,
-		MemoryMb:     229376,
-		GPU:          4,
+	"Standard_NV18ads_A10_v5": {
+		InstanceType: "Standard_NV18ads_A10_v5",
+		VCPU:         18,
+		MemoryMb:     225280,
+		GPU:          1,
 	},
 	"Standard_NV24s_v2": {
 		InstanceType: "Standard_NV24s_v2",
@@ -3796,6 +3922,18 @@ var InstanceTypes = map[string]*InstanceType{
 		MemoryMb:     114688,
 		GPU:          1,
 	},
+	"Standard_NV36adms_A10_v5": {
+		InstanceType: "Standard_NV36adms_A10_v5",
+		VCPU:         36,
+		MemoryMb:     901120,
+		GPU:          1,
+	},
+	"Standard_NV36ads_A10_v5": {
+		InstanceType: "Standard_NV36ads_A10_v5",
+		VCPU:         36,
+		MemoryMb:     450560,
+		GPU:          1,
+	},
 	"Standard_NV48s_v3": {
 		InstanceType: "Standard_NV48s_v3",
 		VCPU:         48,
@@ -3808,16 +3946,10 @@ var InstanceTypes = map[string]*InstanceType{
 		MemoryMb:     14336,
 		GPU:          1,
 	},
-	"Standard_NV6": {
-		InstanceType: "Standard_NV6",
+	"Standard_NV6ads_A10_v5": {
+		InstanceType: "Standard_NV6ads_A10_v5",
 		VCPU:         6,
-		MemoryMb:     57344,
-		GPU:          1,
-	},
-	"Standard_NV6_Promo": {
-		InstanceType: "Standard_NV6_Promo",
-		VCPU:         6,
-		MemoryMb:     57344,
+		MemoryMb:     56320,
 		GPU:          1,
 	},
 	"Standard_NV6s_v2": {
@@ -3825,6 +3957,12 @@ var InstanceTypes = map[string]*InstanceType{
 		VCPU:         6,
 		MemoryMb:     114688,
 		GPU:          1,
+	},
+	"Standard_NV72ads_A10_v5": {
+		InstanceType: "Standard_NV72ads_A10_v5",
+		VCPU:         72,
+		MemoryMb:     901120,
+		GPU:          2,
 	},
 	"Standard_NV8as_v4": {
 		InstanceType: "Standard_NV8as_v4",
