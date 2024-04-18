@@ -1,7 +1,8 @@
+//go:build exoscale
 // +build exoscale
 
 /*
-Copyright 2020 The Kubernetes Authors.
+Copyright 2021 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,6 +23,7 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/exoscale"
 	"k8s.io/autoscaler/cluster-autoscaler/config"
+	"k8s.io/client-go/informers"
 )
 
 // AvailableCloudProviders supported by the Exoscale cloud provider builder.
@@ -32,7 +34,7 @@ var AvailableCloudProviders = []string{
 // DefaultCloudProvider is Exoscale.
 const DefaultCloudProvider = cloudprovider.ExoscaleProviderName
 
-func buildCloudProvider(opts config.AutoscalingOptions, do cloudprovider.NodeGroupDiscoveryOptions, rl *cloudprovider.ResourceLimiter) cloudprovider.CloudProvider {
+func buildCloudProvider(opts config.AutoscalingOptions, do cloudprovider.NodeGroupDiscoveryOptions, rl *cloudprovider.ResourceLimiter, _ informers.SharedInformerFactory) cloudprovider.CloudProvider {
 	switch opts.CloudProviderName {
 	case cloudprovider.ExoscaleProviderName:
 		return exoscale.BuildExoscale(opts, do, rl)

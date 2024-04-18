@@ -24,7 +24,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	autoscaling "k8s.io/api/autoscaling/v1"
 	apiv1 "k8s.io/api/core/v1"
-	policyv1beta1 "k8s.io/api/policy/v1beta1"
+	policyv1 "k8s.io/api/policy/v1"
 	apierrs "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -41,13 +41,15 @@ import (
 	framework_rs "k8s.io/kubernetes/test/e2e/framework/replicaset"
 	framework_ss "k8s.io/kubernetes/test/e2e/framework/statefulset"
 	testutils "k8s.io/kubernetes/test/utils"
+	podsecurity "k8s.io/pod-security-admission/api"
 
-	"github.com/onsi/ginkgo"
+	ginkgo "github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 )
 
 var _ = ActuationSuiteE2eDescribe("Actuation", func() {
 	f := framework.NewDefaultFramework("vertical-pod-autoscaling")
+	f.NamespacePodSecurityEnforceLevel = podsecurity.LevelBaseline
 
 	ginkgo.It("stops when pods get pending", func() {
 
@@ -190,7 +192,7 @@ var _ = ActuationSuiteE2eDescribe("Actuation", func() {
 		permissiveMaxUnavailable := 7
 		// Creating new PDB and removing old one, since PDBs are immutable at the moment
 		setupPDB(f, "hamster-pdb-2", permissiveMaxUnavailable)
-		err = c.PolicyV1beta1().PodDisruptionBudgets(ns).Delete(context.TODO(), pdb.Name, metav1.DeleteOptions{})
+		err = c.PolicyV1().PodDisruptionBudgets(ns).Delete(context.TODO(), pdb.Name, metav1.DeleteOptions{})
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 		ginkgo.By(fmt.Sprintf("Waiting for pods to be evicted, sleep for %s", VpaEvictionTimeout.String()))
@@ -285,10 +287,8 @@ var _ = ActuationSuiteE2eDescribe("Actuation", func() {
 
 	ginkgo.It("does not act on injected sidecars", func() {
 		const (
-			// TODO(krzysied): Update the image url when the agnhost:2.10 image
-			// is promoted to the k8s-e2e-test-images repository.
-			agnhostImage  = "gcr.io/k8s-staging-e2e-test-images/agnhost:2.10"
-			sidecarParam  = "--sidecar-image=k8s.gcr.io/pause:3.1"
+			agnhostImage  = "registry.k8s.io/e2e-test-images/agnhost:2.40"
+			sidecarParam  = "--sidecar-image=registry.k8s.io/pause:3.1"
 			sidecarName   = "webhook-added-sidecar"
 			servicePort   = int32(8443)
 			containerPort = int32(8444)
@@ -379,7 +379,7 @@ func assertPodsPendingForDuration(c clientset.Interface, deployment *appsv1.Depl
 
 	err := wait.PollImmediate(pollInterval, pollTimeout+pendingDuration, func() (bool, error) {
 		var err error
-		currentPodList, err := framework_deployment.GetPodsForDeployment(c, deployment)
+		currentPodList, err := framework_deployment.GetPodsForDeployment(context.TODO(), c, deployment)
 		if err != nil {
 			return false, err
 		}
@@ -505,7 +505,7 @@ func setupHamsterJob(f *framework.Framework, cpu, memory string, replicas int32)
 	}
 	err := testutils.CreateJobWithRetries(f.ClientSet, f.Namespace.Name, job)
 	gomega.Expect(err).NotTo(gomega.HaveOccurred())
-	err = framework_job.WaitForAllJobPodsRunning(f.ClientSet, f.Namespace.Name, job.Name, replicas)
+	err = framework_job.WaitForJobPodsRunning(context.TODO(), f.ClientSet, f.Namespace.Name, job.Name, replicas)
 	gomega.Expect(err).NotTo(gomega.HaveOccurred())
 }
 
@@ -514,7 +514,7 @@ func setupHamsterRS(f *framework.Framework, cpu, memory string, replicas int32) 
 	rs.Spec.Template.Spec.Containers[0] = SetupHamsterContainer(cpu, memory)
 	err := createReplicaSetWithRetries(f.ClientSet, f.Namespace.Name, rs)
 	gomega.Expect(err).NotTo(gomega.HaveOccurred())
-	err = framework_rs.WaitForReadyReplicaSet(f.ClientSet, f.Namespace.Name, rs.Name)
+	err = framework_rs.WaitForReadyReplicaSet(context.TODO(), f.ClientSet, f.Namespace.Name, rs.Name)
 	gomega.Expect(err).NotTo(gomega.HaveOccurred())
 }
 
@@ -525,29 +525,29 @@ func setupHamsterStateful(f *framework.Framework, cpu, memory string, replicas i
 	stateful.Spec.Template.Spec.Containers[0] = SetupHamsterContainer(cpu, memory)
 	err := createStatefulSetSetWithRetries(f.ClientSet, f.Namespace.Name, stateful)
 	gomega.Expect(err).NotTo(gomega.HaveOccurred())
-	framework_ss.WaitForRunningAndReady(f.ClientSet, *stateful.Spec.Replicas, stateful)
+	framework_ss.WaitForRunningAndReady(context.TODO(), f.ClientSet, *stateful.Spec.Replicas, stateful)
 }
 
-func setupPDB(f *framework.Framework, name string, maxUnavailable int) *policyv1beta1.PodDisruptionBudget {
+func setupPDB(f *framework.Framework, name string, maxUnavailable int) *policyv1.PodDisruptionBudget {
 	maxUnavailableIntstr := intstr.FromInt(maxUnavailable)
-	pdb := &policyv1beta1.PodDisruptionBudget{
+	pdb := &policyv1.PodDisruptionBudget{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
 		},
-		Spec: policyv1beta1.PodDisruptionBudgetSpec{
+		Spec: policyv1.PodDisruptionBudgetSpec{
 			MaxUnavailable: &maxUnavailableIntstr,
 			Selector: &metav1.LabelSelector{
 				MatchLabels: hamsterLabels,
 			},
 		},
 	}
-	_, err := f.ClientSet.PolicyV1beta1().PodDisruptionBudgets(f.Namespace.Name).Create(context.TODO(), pdb, metav1.CreateOptions{})
+	_, err := f.ClientSet.PolicyV1().PodDisruptionBudgets(f.Namespace.Name).Create(context.TODO(), pdb, metav1.CreateOptions{})
 	gomega.Expect(err).NotTo(gomega.HaveOccurred())
 	return pdb
 }
 
 func getCurrentPodSetForDeployment(c clientset.Interface, d *appsv1.Deployment) PodSet {
-	podList, err := framework_deployment.GetPodsForDeployment(c, d)
+	podList, err := framework_deployment.GetPodsForDeployment(context.TODO(), c, d)
 	gomega.Expect(err).NotTo(gomega.HaveOccurred())
 	return MakePodSet(podList)
 }
@@ -560,9 +560,6 @@ func createReplicaSetWithRetries(c clientset.Interface, namespace string, obj *a
 		_, err := c.AppsV1().ReplicaSets(namespace).Create(context.TODO(), obj, metav1.CreateOptions{})
 		if err == nil || apierrs.IsAlreadyExists(err) {
 			return true, nil
-		}
-		if testutils.IsRetryableAPIError(err) {
-			return false, nil
 		}
 		return false, fmt.Errorf("failed to create object with non-retriable error: %v", err)
 	}
@@ -577,9 +574,6 @@ func createStatefulSetSetWithRetries(c clientset.Interface, namespace string, ob
 		_, err := c.AppsV1().StatefulSets(namespace).Create(context.TODO(), obj, metav1.CreateOptions{})
 		if err == nil || apierrs.IsAlreadyExists(err) {
 			return true, nil
-		}
-		if testutils.IsRetryableAPIError(err) {
-			return false, nil
 		}
 		return false, fmt.Errorf("failed to create object with non-retriable error: %v", err)
 	}

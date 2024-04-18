@@ -12,6 +12,7 @@ import (
 	"github.com/opencontainers/runc/libcontainer/configs"
 	"github.com/opencontainers/runc/libcontainer/intelrdt"
 	selinux "github.com/opencontainers/selinux/go-selinux"
+	"github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 )
 
@@ -23,13 +24,13 @@ func New() Validator {
 	return &ConfigValidator{}
 }
 
-type ConfigValidator struct {
-}
+type ConfigValidator struct{}
 
 type check func(config *configs.Config) error
 
 func (v *ConfigValidator) Validate(config *configs.Config) error {
 	checks := []check{
+		v.cgroups,
 		v.rootfs,
 		v.network,
 		v.hostname,
@@ -39,17 +40,21 @@ func (v *ConfigValidator) Validate(config *configs.Config) error {
 		v.sysctl,
 		v.intelrdt,
 		v.rootlessEUID,
-		v.mounts,
 	}
 	for _, c := range checks {
 		if err := c(config); err != nil {
 			return err
 		}
 	}
-	if err := v.cgroups(config); err != nil {
-		return err
+	// Relaxed validation rules for backward compatibility
+	warns := []check{
+		v.mounts, // TODO (runc v1.x.x): make this an error instead of a warning
 	}
-
+	for _, c := range warns {
+		if err := c(config); err != nil {
+			logrus.WithError(err).Warn("invalid configuration")
+		}
+	}
 	return nil
 }
 
@@ -57,20 +62,17 @@ func (v *ConfigValidator) Validate(config *configs.Config) error {
 // to the container's root filesystem.
 func (v *ConfigValidator) rootfs(config *configs.Config) error {
 	if _, err := os.Stat(config.Rootfs); err != nil {
-		if os.IsNotExist(err) {
-			return fmt.Errorf("rootfs (%s) does not exist", config.Rootfs)
-		}
-		return err
+		return fmt.Errorf("invalid rootfs: %w", err)
 	}
 	cleaned, err := filepath.Abs(config.Rootfs)
 	if err != nil {
-		return err
+		return fmt.Errorf("invalid rootfs: %w", err)
 	}
 	if cleaned, err = filepath.EvalSymlinks(cleaned); err != nil {
-		return err
+		return fmt.Errorf("invalid rootfs: %w", err)
 	}
 	if filepath.Clean(config.Rootfs) != cleaned {
-		return fmt.Errorf("%s is not an absolute path or is a symlink", config.Rootfs)
+		return errors.New("invalid rootfs: not an absolute path, or a symlink")
 	}
 	return nil
 }
@@ -107,11 +109,19 @@ func (v *ConfigValidator) security(config *configs.Config) error {
 func (v *ConfigValidator) usernamespace(config *configs.Config) error {
 	if config.Namespaces.Contains(configs.NEWUSER) {
 		if _, err := os.Stat("/proc/self/ns/user"); os.IsNotExist(err) {
-			return errors.New("USER namespaces aren't enabled in the kernel")
+			return errors.New("user namespaces aren't enabled in the kernel")
 		}
+		hasPath := config.Namespaces.PathOf(configs.NEWUSER) != ""
+		hasMappings := config.UidMappings != nil || config.GidMappings != nil
+		if !hasPath && !hasMappings {
+			return errors.New("user namespaces enabled, but no namespace path to join nor mappings to apply specified")
+		}
+		// The hasPath && hasMappings validation case is handled in specconv --
+		// we cache the mappings in Config during specconv in the hasPath case,
+		// so we cannot do that validation here.
 	} else {
 		if config.UidMappings != nil || config.GidMappings != nil {
-			return errors.New("User namespace mappings specified, but USER namespace isn't enabled in the config")
+			return errors.New("user namespace mappings specified, but user namespace isn't enabled in the config")
 		}
 	}
 	return nil
@@ -124,6 +134,35 @@ func (v *ConfigValidator) cgroupnamespace(config *configs.Config) error {
 		}
 	}
 	return nil
+}
+
+// convertSysctlVariableToDotsSeparator can return sysctl variables in dots separator format.
+// The '/' separator is also accepted in place of a '.'.
+// Convert the sysctl variables to dots separator format for validation.
+// More info: sysctl(8), sysctl.d(5).
+//
+// For example:
+// Input sysctl variable "net/ipv4/conf/eno2.100.rp_filter"
+// will return the converted value "net.ipv4.conf.eno2/100.rp_filter"
+func convertSysctlVariableToDotsSeparator(val string) string {
+	if val == "" {
+		return val
+	}
+	firstSepIndex := strings.IndexAny(val, "./")
+	if firstSepIndex == -1 || val[firstSepIndex] == '.' {
+		return val
+	}
+
+	f := func(r rune) rune {
+		switch r {
+		case '.':
+			return '/'
+		case '/':
+			return '.'
+		}
+		return r
+	}
+	return strings.Map(f, val)
 }
 
 // sysctl validates that the specified sysctl keys are valid or not.
@@ -148,6 +187,7 @@ func (v *ConfigValidator) sysctl(config *configs.Config) error {
 	)
 
 	for s := range config.Sysctl {
+		s := convertSysctlVariableToDotsSeparator(s)
 		if validSysctlMap[s] || strings.HasPrefix(s, "fs.mqueue.") {
 			if config.Namespaces.Contains(configs.NEWIPC) {
 				continue
@@ -171,7 +211,7 @@ func (v *ConfigValidator) sysctl(config *configs.Config) error {
 				hostnet, hostnetErr = isHostNetNS(path)
 			})
 			if hostnetErr != nil {
-				return hostnetErr
+				return fmt.Errorf("invalid netns path: %w", hostnetErr)
 			}
 			if hostnet {
 				return fmt.Errorf("sysctl %q not allowed in host network namespace", s)
@@ -196,8 +236,8 @@ func (v *ConfigValidator) sysctl(config *configs.Config) error {
 
 func (v *ConfigValidator) intelrdt(config *configs.Config) error {
 	if config.IntelRdt != nil {
-		if !intelrdt.IsCATEnabled() && !intelrdt.IsMBAEnabled() {
-			return errors.New("intelRdt is specified in config, but Intel RDT is not supported or enabled")
+		if config.IntelRdt.ClosID == "." || config.IntelRdt.ClosID == ".." || strings.Contains(config.IntelRdt.ClosID, "/") {
+			return fmt.Errorf("invalid intelRdt.ClosID %q", config.IntelRdt.ClosID)
 		}
 
 		if !intelrdt.IsCATEnabled() && config.IntelRdt.L3CacheSchema != "" {
@@ -205,13 +245,6 @@ func (v *ConfigValidator) intelrdt(config *configs.Config) error {
 		}
 		if !intelrdt.IsMBAEnabled() && config.IntelRdt.MemBwSchema != "" {
 			return errors.New("intelRdt.memBwSchema is specified in config, but Intel RDT/MBA is not enabled")
-		}
-
-		if intelrdt.IsCATEnabled() && config.IntelRdt.L3CacheSchema == "" {
-			return errors.New("Intel RDT/CAT is enabled and intelRdt is specified in config, but intelRdt.l3CacheSchema is empty")
-		}
-		if intelrdt.IsMBAEnabled() && config.IntelRdt.MemBwSchema == "" {
-			return errors.New("Intel RDT/MBA is enabled and intelRdt is specified in config, but intelRdt.memBwSchema is empty")
 		}
 	}
 
@@ -263,10 +296,10 @@ func isHostNetNS(path string) (bool, error) {
 	var st1, st2 unix.Stat_t
 
 	if err := unix.Stat(currentProcessNetns, &st1); err != nil {
-		return false, fmt.Errorf("unable to stat %q: %s", currentProcessNetns, err)
+		return false, &os.PathError{Op: "stat", Path: currentProcessNetns, Err: err}
 	}
 	if err := unix.Stat(path, &st2); err != nil {
-		return false, fmt.Errorf("unable to stat %q: %s", path, err)
+		return false, &os.PathError{Op: "stat", Path: path, Err: err}
 	}
 
 	return (st1.Dev == st2.Dev) && (st1.Ino == st2.Ino), nil

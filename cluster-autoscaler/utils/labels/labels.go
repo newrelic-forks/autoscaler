@@ -115,3 +115,16 @@ func calculateNodeSelectorStats(pods []*apiv1.Pod) []nodeSelectorStats {
 	}
 	return stats
 }
+
+// UpdateDeprecatedLabels updates beta and deprecated labels from stable labels
+func UpdateDeprecatedLabels(labels map[string]string) {
+	if v, ok := labels[apiv1.LabelInstanceTypeStable]; ok {
+		labels[apiv1.LabelInstanceType] = v
+	}
+	if v, ok := labels[apiv1.LabelTopologyRegion]; ok {
+		labels[apiv1.LabelZoneRegion] = v
+	}
+	if v, ok := labels[apiv1.LabelTopologyZone]; ok {
+		labels[apiv1.LabelZoneFailureDomain] = v
+	}
+}

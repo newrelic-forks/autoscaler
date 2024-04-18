@@ -1,3 +1,4 @@
+//go:build kubemark
 // +build kubemark
 
 /*
@@ -22,6 +23,7 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/kubemark"
 	"k8s.io/autoscaler/cluster-autoscaler/config"
+	"k8s.io/client-go/informers"
 )
 
 // AvailableCloudProviders supported by the cloud provider builder.
@@ -32,7 +34,7 @@ var AvailableCloudProviders = []string{
 // DefaultCloudProvider for Kubemark-only build is Kubemark.
 const DefaultCloudProvider = cloudprovider.KubemarkProviderName
 
-func buildCloudProvider(opts config.AutoscalingOptions, do cloudprovider.NodeGroupDiscoveryOptions, rl *cloudprovider.ResourceLimiter) cloudprovider.CloudProvider {
+func buildCloudProvider(opts config.AutoscalingOptions, do cloudprovider.NodeGroupDiscoveryOptions, rl *cloudprovider.ResourceLimiter, _ informers.SharedInformerFactory) cloudprovider.CloudProvider {
 	switch opts.CloudProviderName {
 	case cloudprovider.KubemarkProviderName:
 		return kubemark.BuildKubemark(opts, do, rl)

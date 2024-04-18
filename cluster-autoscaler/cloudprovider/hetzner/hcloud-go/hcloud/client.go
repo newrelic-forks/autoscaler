@@ -1,28 +1,12 @@
-/*
-Copyright 2018 The Kubernetes Authors.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
-
 package hcloud
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"math"
 	"net/http"
 	"net/http/httputil"
@@ -31,6 +15,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"golang.org/x/net/http/httpguts"
+
+	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/hetzner/hcloud-go/hcloud/internal/instrumentation"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/hetzner/hcloud-go/hcloud/schema"
 )
 
@@ -55,7 +43,10 @@ func ConstantBackoff(d time.Duration) BackoffFunc {
 }
 
 // ExponentialBackoff returns a BackoffFunc which implements an exponential
-// backoff using the formula: b^retries * d
+// backoff.
+// It uses the formula:
+//
+//	b^retries * d
 func ExponentialBackoff(b float64, d time.Duration) BackoffFunc {
 	return func(retries int) time.Duration {
 		return time.Duration(math.Pow(b, float64(retries))) * d
@@ -64,19 +55,22 @@ func ExponentialBackoff(b float64, d time.Duration) BackoffFunc {
 
 // Client is a client for the Hetzner Cloud API.
 type Client struct {
-	endpoint           string
-	token              string
-	pollInterval       time.Duration
-	backoffFunc        BackoffFunc
-	httpClient         *http.Client
-	applicationName    string
-	applicationVersion string
-	userAgent          string
-	debugWriter        io.Writer
+	endpoint                string
+	token                   string
+	tokenValid              bool
+	backoffFunc             BackoffFunc
+	pollBackoffFunc         BackoffFunc
+	httpClient              *http.Client
+	applicationName         string
+	applicationVersion      string
+	userAgent               string
+	debugWriter             io.Writer
+	instrumentationRegistry *prometheus.Registry
 
 	Action           ActionClient
 	Certificate      CertificateClient
 	Datacenter       DatacenterClient
+	Firewall         FirewallClient
 	FloatingIP       FloatingIPClient
 	Image            ImageClient
 	ISO              ISOClient
@@ -89,6 +83,9 @@ type Client struct {
 	ServerType       ServerTypeClient
 	SSHKey           SSHKeyClient
 	Volume           VolumeClient
+	PlacementGroup   PlacementGroupClient
+	RDNS             RDNSClient
+	PrimaryIP        PrimaryIPClient
 }
 
 // A ClientOption is used to configure a Client.
@@ -105,18 +102,35 @@ func WithEndpoint(endpoint string) ClientOption {
 func WithToken(token string) ClientOption {
 	return func(client *Client) {
 		client.token = token
+		client.tokenValid = httpguts.ValidHeaderFieldValue(token)
 	}
 }
 
-// WithPollInterval configures a Client to use the specified interval when polling
-// from the API.
+// WithPollInterval configures a Client to use the specified interval when
+// polling from the API.
+//
+// Deprecated: Setting the poll interval is deprecated, you can now configure
+// [WithPollBackoffFunc] with a [ConstantBackoff] to get the same results. To
+// migrate your code, replace your usage like this:
+//
+//	// before
+//	hcloud.WithPollInterval(2 * time.Second)
+//	// now
+//	hcloud.WithPollBackoffFunc(hcloud.ConstantBackoff(2 * time.Second))
 func WithPollInterval(pollInterval time.Duration) ClientOption {
+	return WithPollBackoffFunc(ConstantBackoff(pollInterval))
+}
+
+// WithPollBackoffFunc configures a Client to use the specified backoff
+// function when polling from the API.
+func WithPollBackoffFunc(f BackoffFunc) ClientOption {
 	return func(client *Client) {
-		client.pollInterval = pollInterval
+		client.pollBackoffFunc = f
 	}
 }
 
 // WithBackoffFunc configures a Client to use the specified backoff function.
+// The backoff function is used for retrying HTTP requests.
 func WithBackoffFunc(f BackoffFunc) ClientOption {
 	return func(client *Client) {
 		client.backoffFunc = f
@@ -148,13 +162,21 @@ func WithHTTPClient(httpClient *http.Client) ClientOption {
 	}
 }
 
+// WithInstrumentation configures a Client to collect metrics about the performed HTTP requests.
+func WithInstrumentation(registry *prometheus.Registry) ClientOption {
+	return func(client *Client) {
+		client.instrumentationRegistry = registry
+	}
+}
+
 // NewClient creates a new client.
 func NewClient(options ...ClientOption) *Client {
 	client := &Client{
-		endpoint:     Endpoint,
-		httpClient:   &http.Client{},
-		backoffFunc:  ExponentialBackoff(2, 500*time.Millisecond),
-		pollInterval: 500 * time.Millisecond,
+		endpoint:        Endpoint,
+		tokenValid:      true,
+		httpClient:      &http.Client{},
+		backoffFunc:     ExponentialBackoff(2, 500*time.Millisecond),
+		pollBackoffFunc: ConstantBackoff(500 * time.Millisecond),
 	}
 
 	for _, option := range options {
@@ -162,22 +184,30 @@ func NewClient(options ...ClientOption) *Client {
 	}
 
 	client.buildUserAgent()
+	if client.instrumentationRegistry != nil {
+		i := instrumentation.New("api", client.instrumentationRegistry)
+		client.httpClient.Transport = i.InstrumentedRoundTripper()
+	}
 
-	client.Action = ActionClient{client: client}
+	client.Action = ActionClient{action: &ResourceActionClient{client: client}}
 	client.Datacenter = DatacenterClient{client: client}
-	client.FloatingIP = FloatingIPClient{client: client}
-	client.Image = ImageClient{client: client}
+	client.FloatingIP = FloatingIPClient{client: client, Action: &ResourceActionClient{client: client, resource: "floating_ips"}}
+	client.Image = ImageClient{client: client, Action: &ResourceActionClient{client: client, resource: "images"}}
 	client.ISO = ISOClient{client: client}
 	client.Location = LocationClient{client: client}
-	client.Network = NetworkClient{client: client}
+	client.Network = NetworkClient{client: client, Action: &ResourceActionClient{client: client, resource: "networks"}}
 	client.Pricing = PricingClient{client: client}
-	client.Server = ServerClient{client: client}
+	client.Server = ServerClient{client: client, Action: &ResourceActionClient{client: client, resource: "servers"}}
 	client.ServerType = ServerTypeClient{client: client}
 	client.SSHKey = SSHKeyClient{client: client}
-	client.Volume = VolumeClient{client: client}
-	client.LoadBalancer = LoadBalancerClient{client: client}
+	client.Volume = VolumeClient{client: client, Action: &ResourceActionClient{client: client, resource: "volumes"}}
+	client.LoadBalancer = LoadBalancerClient{client: client, Action: &ResourceActionClient{client: client, resource: "load_balancers"}}
 	client.LoadBalancerType = LoadBalancerTypeClient{client: client}
-	client.Certificate = CertificateClient{client: client}
+	client.Certificate = CertificateClient{client: client, Action: &ResourceActionClient{client: client, resource: "certificates"}}
+	client.Firewall = FirewallClient{client: client, Action: &ResourceActionClient{client: client, resource: "firewalls"}}
+	client.PlacementGroup = PlacementGroupClient{client: client}
+	client.RDNS = RDNSClient{client: client}
+	client.PrimaryIP = PrimaryIPClient{client: client, Action: &ResourceActionClient{client: client, resource: "primary_ips"}}
 
 	return client
 }
@@ -191,9 +221,13 @@ func (c *Client) NewRequest(ctx context.Context, method, path string, body io.Re
 		return nil, err
 	}
 	req.Header.Set("User-Agent", c.userAgent)
-	if c.token != "" {
+
+	if !c.tokenValid {
+		return nil, errors.New("Authorization token contains invalid characters")
+	} else if c.token != "" {
 		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.token))
 	}
+
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -207,7 +241,7 @@ func (c *Client) Do(r *http.Request, v interface{}) (*Response, error) {
 	var body []byte
 	var err error
 	if r.ContentLength > 0 {
-		body, err = ioutil.ReadAll(r.Body)
+		body, err = io.ReadAll(r.Body)
 		if err != nil {
 			r.Body.Close()
 			return nil, err
@@ -216,12 +250,11 @@ func (c *Client) Do(r *http.Request, v interface{}) (*Response, error) {
 	}
 	for {
 		if r.ContentLength > 0 {
-			r.Body = ioutil.NopCloser(bytes.NewReader(body))
+			r.Body = io.NopCloser(bytes.NewReader(body))
 		}
 
 		if c.debugWriter != nil {
-			// To get the response body we need to read it before the request was actually send. https://github.com/golang/go/issues/29792
-			dumpReq, err := httputil.DumpRequestOut(r, true)
+			dumpReq, err := dumpRequest(r)
 			if err != nil {
 				return nil, err
 			}
@@ -233,13 +266,13 @@ func (c *Client) Do(r *http.Request, v interface{}) (*Response, error) {
 			return nil, err
 		}
 		response := &Response{Response: resp}
-		body, err := ioutil.ReadAll(resp.Body)
+		body, err := io.ReadAll(resp.Body)
 		if err != nil {
 			resp.Body.Close()
 			return response, err
 		}
 		resp.Body.Close()
-		resp.Body = ioutil.NopCloser(bytes.NewReader(body))
+		resp.Body = io.NopCloser(bytes.NewReader(body))
 
 		if c.debugWriter != nil {
 			dumpResp, err := httputil.DumpResponse(resp, true)
@@ -257,12 +290,10 @@ func (c *Client) Do(r *http.Request, v interface{}) (*Response, error) {
 			err = errorFromResponse(resp, body)
 			if err == nil {
 				err = fmt.Errorf("hcloud: server responded with status code %d", resp.StatusCode)
-			} else {
-				if isRetryable(err) {
-					c.backoff(retries)
-					retries++
-					continue
-				}
+			} else if IsError(err, ErrorCodeConflict) {
+				c.backoff(retries)
+				retries++
+				continue
 			}
 			return response, err
 		}
@@ -278,29 +309,21 @@ func (c *Client) Do(r *http.Request, v interface{}) (*Response, error) {
 	}
 }
 
-func isRetryable(error error) bool {
-	err, ok := error.(Error)
-	if !ok {
-		return false
-	}
-	return err.Code == ErrorCodeRateLimitExceeded || err.Code == ErrorCodeConflict
-}
-
 func (c *Client) backoff(retries int) {
 	time.Sleep(c.backoffFunc(retries))
 }
 
-func (c *Client) all(f func(int) (*Response, error)) (*Response, error) {
+func (c *Client) all(f func(int) (*Response, error)) error {
 	var (
 		page = 1
 	)
 	for {
 		resp, err := f(page)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		if resp.Meta.Pagination == nil || resp.Meta.Pagination.NextPage == 0 {
-			return resp, nil
+			return nil
 		}
 		page = resp.Meta.Pagination.NextPage
 	}
@@ -315,6 +338,25 @@ func (c *Client) buildUserAgent() {
 	default:
 		c.userAgent = UserAgent
 	}
+}
+
+func dumpRequest(r *http.Request) ([]byte, error) {
+	// Duplicate the request, so we can redact the auth header
+	rDuplicate := r.Clone(context.Background())
+	rDuplicate.Header.Set("Authorization", "REDACTED")
+
+	// To get the request body we need to read it before the request was actually sent.
+	// See https://github.com/golang/go/issues/29792
+	dumpReq, err := httputil.DumpRequestOut(rDuplicate, true)
+	if err != nil {
+		return nil, err
+	}
+
+	// Set original request body to the duplicate created by DumpRequestOut. The request body is not duplicated
+	// by .Clone() and instead just referenced, so it would be completely read otherwise.
+	r.Body = rDuplicate.Body
+
+	return dumpReq, nil
 }
 
 func errorFromResponse(resp *http.Response, body []byte) error {
@@ -395,7 +437,8 @@ type ListOpts struct {
 	LabelSelector string // Label selector for filtering by labels
 }
 
-func (l ListOpts) values() url.Values {
+// Values returns the ListOpts as URL values.
+func (l ListOpts) Values() url.Values {
 	vals := url.Values{}
 	if l.Page > 0 {
 		vals.Add("page", strconv.Itoa(l.Page))

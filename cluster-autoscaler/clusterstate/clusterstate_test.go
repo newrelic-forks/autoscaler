@@ -17,16 +17,22 @@ limitations under the License.
 package clusterstate
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
+	"k8s.io/autoscaler/cluster-autoscaler/config"
 	"k8s.io/autoscaler/cluster-autoscaler/metrics"
+	"k8s.io/autoscaler/cluster-autoscaler/processors/nodegroupconfig"
 
 	apiv1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 	testprovider "k8s.io/autoscaler/cluster-autoscaler/cloudprovider/test"
 	"k8s.io/autoscaler/cluster-autoscaler/clusterstate/api"
 	"k8s.io/autoscaler/cluster-autoscaler/clusterstate/utils"
+
+	"k8s.io/autoscaler/cluster-autoscaler/utils/taints"
 	. "k8s.io/autoscaler/cluster-autoscaler/utils/test"
 	"k8s.io/client-go/kubernetes/fake"
 	kube_record "k8s.io/client-go/tools/record"
@@ -34,6 +40,19 @@ import (
 	"github.com/stretchr/testify/assert"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/backoff"
 )
+
+// GetCloudProviderDeletedNodeNames returns a list of the names of nodes removed
+// from cloud provider but registered in Kubernetes.
+func GetCloudProviderDeletedNodeNames(csr *ClusterStateRegistry) []string {
+	csr.Lock()
+	defer csr.Unlock()
+
+	result := make([]string, 0, len(csr.deletedNodes))
+	for nodeName := range csr.deletedNodes {
+		result = append(result, nodeName)
+	}
+	return result
+}
 
 func TestOKWithScaleUp(t *testing.T) {
 	now := time.Now()
@@ -56,29 +75,25 @@ func TestOKWithScaleUp(t *testing.T) {
 	clusterstate := NewClusterStateRegistry(provider, ClusterStateRegistryConfig{
 		MaxTotalUnreadyPercentage: 10,
 		OkTotalUnreadyCount:       1,
-		MaxNodeProvisionTime:      time.Minute,
-	}, fakeLogRecorder, newBackoff())
-	clusterstate.RegisterOrUpdateScaleUp(provider.GetNodeGroup("ng1"), 4, time.Now())
+	}, fakeLogRecorder, newBackoff(), nodegroupconfig.NewDefaultNodeGroupConfigProcessor(config.NodeGroupAutoscalingOptions{MaxNodeProvisionTime: time.Minute}))
+	clusterstate.RegisterScaleUp(provider.GetNodeGroup("ng1"), 4, time.Now())
 	err := clusterstate.UpdateNodes([]*apiv1.Node{ng1_1, ng2_1}, nil, now)
 	assert.NoError(t, err)
 	assert.True(t, clusterstate.IsClusterHealthy())
 	assert.Empty(t, clusterstate.GetScaleUpFailures())
 
 	status := clusterstate.GetStatus(now)
-	assert.Equal(t, api.ClusterAutoscalerInProgress,
-		api.GetConditionByType(api.ClusterAutoscalerScaleUp, status.ClusterwideConditions).Status)
-	assert.Equal(t, 2, len(status.NodeGroupStatuses))
+	assert.Equal(t, api.ClusterAutoscalerInProgress, status.ClusterWide.ScaleUp.Status)
+	assert.Equal(t, 2, len(status.NodeGroups))
 	ng1Checked := false
 	ng2Checked := true
-	for _, nodeStatus := range status.NodeGroupStatuses {
-		if nodeStatus.ProviderID == "ng1" {
-			assert.Equal(t, api.ClusterAutoscalerInProgress,
-				api.GetConditionByType(api.ClusterAutoscalerScaleUp, nodeStatus.Conditions).Status)
+	for _, nodeGroupStatus := range status.NodeGroups {
+		if nodeGroupStatus.Name == "ng1" {
+			assert.Equal(t, api.ClusterAutoscalerInProgress, nodeGroupStatus.ScaleUp.Status)
 			ng1Checked = true
 		}
-		if nodeStatus.ProviderID == "ng2" {
-			assert.Equal(t, api.ClusterAutoscalerNoActivity,
-				api.GetConditionByType(api.ClusterAutoscalerScaleUp, nodeStatus.Conditions).Status)
+		if nodeGroupStatus.Name == "ng2" {
+			assert.Equal(t, api.ClusterAutoscalerNoActivity, nodeGroupStatus.ScaleUp.Status)
 			ng2Checked = true
 		}
 	}
@@ -98,17 +113,17 @@ func TestEmptyOK(t *testing.T) {
 	clusterstate := NewClusterStateRegistry(provider, ClusterStateRegistryConfig{
 		MaxTotalUnreadyPercentage: 10,
 		OkTotalUnreadyCount:       1,
-		MaxNodeProvisionTime:      time.Minute,
-	}, fakeLogRecorder, newBackoff())
+	}, fakeLogRecorder, newBackoff(), nodegroupconfig.NewDefaultNodeGroupConfigProcessor(config.NodeGroupAutoscalingOptions{MaxNodeProvisionTime: time.Minute}))
 	err := clusterstate.UpdateNodes([]*apiv1.Node{}, nil, now.Add(-5*time.Second))
 	assert.NoError(t, err)
 	assert.True(t, clusterstate.IsClusterHealthy())
 	assert.Empty(t, clusterstate.GetScaleUpFailures())
 	assert.True(t, clusterstate.IsNodeGroupHealthy("ng1"))
 	assert.False(t, clusterstate.IsNodeGroupScalingUp("ng1"))
+	assert.False(t, clusterstate.HasNodeGroupStartedScaleUp("ng1"))
 
 	provider.AddNodeGroup("ng1", 0, 10, 3)
-	clusterstate.RegisterOrUpdateScaleUp(provider.GetNodeGroup("ng1"), 3, now.Add(-3*time.Second))
+	clusterstate.RegisterScaleUp(provider.GetNodeGroup("ng1"), 3, now.Add(-3*time.Second))
 	//	clusterstate.scaleUpRequests["ng1"].Time = now.Add(-3 * time.Second)
 	//	clusterstate.scaleUpRequests["ng1"].ExpectedAddTime = now.Add(1 * time.Minute)
 	err = clusterstate.UpdateNodes([]*apiv1.Node{}, nil, now)
@@ -117,6 +132,48 @@ func TestEmptyOK(t *testing.T) {
 	assert.True(t, clusterstate.IsClusterHealthy())
 	assert.True(t, clusterstate.IsNodeGroupHealthy("ng1"))
 	assert.True(t, clusterstate.IsNodeGroupScalingUp("ng1"))
+	assert.True(t, clusterstate.HasNodeGroupStartedScaleUp("ng1"))
+}
+
+func TestHasNodeGroupStartedScaleUp(t *testing.T) {
+	tests := map[string]struct {
+		initialSize int
+		delta       int
+	}{
+		"Target size reverts back to zero": {
+			initialSize: 0,
+			delta:       3,
+		},
+	}
+	for tn, tc := range tests {
+		t.Run(tn, func(t *testing.T) {
+			now := time.Now()
+			provider := testprovider.NewTestCloudProvider(nil, nil)
+			provider.AddNodeGroup("ng1", 0, 5, tc.initialSize)
+			fakeClient := &fake.Clientset{}
+			fakeLogRecorder, _ := utils.NewStatusMapRecorder(fakeClient, "kube-system", kube_record.NewFakeRecorder(5), false, "my-cool-configmap")
+			clusterstate := NewClusterStateRegistry(provider, ClusterStateRegistryConfig{
+				MaxTotalUnreadyPercentage: 10,
+				OkTotalUnreadyCount:       1,
+			}, fakeLogRecorder, newBackoff(), nodegroupconfig.NewDefaultNodeGroupConfigProcessor(config.NodeGroupAutoscalingOptions{MaxNodeProvisionTime: time.Minute}))
+			err := clusterstate.UpdateNodes([]*apiv1.Node{}, nil, now.Add(-5*time.Second))
+			assert.NoError(t, err)
+			assert.False(t, clusterstate.IsNodeGroupScalingUp("ng1"))
+			assert.False(t, clusterstate.HasNodeGroupStartedScaleUp("ng1"))
+
+			provider.AddNodeGroup("ng1", 0, 5, tc.initialSize+tc.delta)
+			clusterstate.RegisterScaleUp(provider.GetNodeGroup("ng1"), tc.delta, now.Add(-3*time.Second))
+			err = clusterstate.UpdateNodes([]*apiv1.Node{}, nil, now)
+			assert.NoError(t, err)
+			assert.True(t, clusterstate.IsNodeGroupScalingUp("ng1"))
+			assert.True(t, clusterstate.HasNodeGroupStartedScaleUp("ng1"))
+
+			provider.AddNodeGroup("ng1", 0, 5, tc.initialSize)
+			clusterstate.Recalculate()
+			assert.False(t, clusterstate.IsNodeGroupScalingUp("ng1"))
+			assert.True(t, clusterstate.HasNodeGroupStartedScaleUp("ng1"))
+		})
+	}
 }
 
 func TestOKOneUnreadyNode(t *testing.T) {
@@ -139,7 +196,7 @@ func TestOKOneUnreadyNode(t *testing.T) {
 	clusterstate := NewClusterStateRegistry(provider, ClusterStateRegistryConfig{
 		MaxTotalUnreadyPercentage: 10,
 		OkTotalUnreadyCount:       1,
-	}, fakeLogRecorder, newBackoff())
+	}, fakeLogRecorder, newBackoff(), nodegroupconfig.NewDefaultNodeGroupConfigProcessor(config.NodeGroupAutoscalingOptions{MaxNodeProvisionTime: 15 * time.Minute}))
 	err := clusterstate.UpdateNodes([]*apiv1.Node{ng1_1, ng2_1}, nil, now)
 	assert.NoError(t, err)
 	assert.True(t, clusterstate.IsClusterHealthy())
@@ -147,17 +204,14 @@ func TestOKOneUnreadyNode(t *testing.T) {
 	assert.True(t, clusterstate.IsNodeGroupHealthy("ng1"))
 
 	status := clusterstate.GetStatus(now)
-	assert.Equal(t, api.ClusterAutoscalerHealthy,
-		api.GetConditionByType(api.ClusterAutoscalerHealth, status.ClusterwideConditions).Status)
-	assert.Equal(t, api.ClusterAutoscalerNoActivity,
-		api.GetConditionByType(api.ClusterAutoscalerScaleUp, status.ClusterwideConditions).Status)
+	assert.Equal(t, api.ClusterAutoscalerHealthy, status.ClusterWide.Health.Status)
+	assert.Equal(t, api.ClusterAutoscalerNoActivity, status.ClusterWide.ScaleUp.Status)
 
-	assert.Equal(t, 2, len(status.NodeGroupStatuses))
+	assert.Equal(t, 2, len(status.NodeGroups))
 	ng1Checked := false
-	for _, nodeStatus := range status.NodeGroupStatuses {
-		if nodeStatus.ProviderID == "ng1" {
-			assert.Equal(t, api.ClusterAutoscalerHealthy,
-				api.GetConditionByType(api.ClusterAutoscalerHealth, nodeStatus.Conditions).Status)
+	for _, nodeGroupStatus := range status.NodeGroups {
+		if nodeGroupStatus.Name == "ng1" {
+			assert.Equal(t, api.ClusterAutoscalerHealthy, nodeGroupStatus.Health.Status)
 			ng1Checked = true
 		}
 	}
@@ -177,7 +231,7 @@ func TestNodeWithoutNodeGroupDontCrash(t *testing.T) {
 	clusterstate := NewClusterStateRegistry(provider, ClusterStateRegistryConfig{
 		MaxTotalUnreadyPercentage: 10,
 		OkTotalUnreadyCount:       1,
-	}, fakeLogRecorder, newBackoff())
+	}, fakeLogRecorder, newBackoff(), nodegroupconfig.NewDefaultNodeGroupConfigProcessor(config.NodeGroupAutoscalingOptions{MaxNodeProvisionTime: 15 * time.Minute}))
 	err := clusterstate.UpdateNodes([]*apiv1.Node{noNgNode}, nil, now)
 	assert.NoError(t, err)
 	assert.Empty(t, clusterstate.GetScaleUpFailures())
@@ -204,7 +258,7 @@ func TestOKOneUnreadyNodeWithScaleDownCandidate(t *testing.T) {
 	clusterstate := NewClusterStateRegistry(provider, ClusterStateRegistryConfig{
 		MaxTotalUnreadyPercentage: 10,
 		OkTotalUnreadyCount:       1,
-	}, fakeLogRecorder, newBackoff())
+	}, fakeLogRecorder, newBackoff(), nodegroupconfig.NewDefaultNodeGroupConfigProcessor(config.NodeGroupAutoscalingOptions{MaxNodeProvisionTime: 15 * time.Minute}))
 	err := clusterstate.UpdateNodes([]*apiv1.Node{ng1_1, ng2_1}, nil, now)
 	clusterstate.UpdateScaleDownCandidates([]*apiv1.Node{ng1_1}, now)
 
@@ -214,33 +268,22 @@ func TestOKOneUnreadyNodeWithScaleDownCandidate(t *testing.T) {
 	assert.True(t, clusterstate.IsNodeGroupHealthy("ng1"))
 
 	status := clusterstate.GetStatus(now)
-	assert.Equal(t, api.ClusterAutoscalerHealthy,
-		api.GetConditionByType(api.ClusterAutoscalerHealth, status.ClusterwideConditions).Status)
-	assert.Equal(t, api.ClusterAutoscalerNoActivity,
-		api.GetConditionByType(api.ClusterAutoscalerScaleUp, status.ClusterwideConditions).Status)
-	assert.Equal(t, api.ClusterAutoscalerCandidatesPresent,
-		api.GetConditionByType(api.ClusterAutoscalerScaleDown, status.ClusterwideConditions).Status)
+	assert.Equal(t, api.ClusterAutoscalerHealthy, status.ClusterWide.Health.Status)
+	assert.Equal(t, api.ClusterAutoscalerNoActivity, status.ClusterWide.ScaleUp.Status)
+	assert.Equal(t, api.ClusterAutoscalerCandidatesPresent, status.ClusterWide.ScaleDown.Status)
 
-	assert.Equal(t, 2, len(status.NodeGroupStatuses))
+	assert.Equal(t, 2, len(status.NodeGroups))
 	ng1Checked := false
 	ng2Checked := false
-	for _, nodeStatus := range status.NodeGroupStatuses {
-		if nodeStatus.ProviderID == "ng1" {
-			assert.Equal(t, api.ClusterAutoscalerHealthy,
-				api.GetConditionByType(api.ClusterAutoscalerHealth, nodeStatus.Conditions).Status)
-
-			assert.Equal(t, api.ClusterAutoscalerCandidatesPresent,
-				api.GetConditionByType(api.ClusterAutoscalerScaleDown, nodeStatus.Conditions).Status)
-
+	for _, nodeGroupStatus := range status.NodeGroups {
+		if nodeGroupStatus.Name == "ng1" {
+			assert.Equal(t, api.ClusterAutoscalerHealthy, nodeGroupStatus.Health.Status)
+			assert.Equal(t, api.ClusterAutoscalerCandidatesPresent, nodeGroupStatus.ScaleDown.Status)
 			ng1Checked = true
 		}
-		if nodeStatus.ProviderID == "ng2" {
-			assert.Equal(t, api.ClusterAutoscalerHealthy,
-				api.GetConditionByType(api.ClusterAutoscalerHealth, nodeStatus.Conditions).Status)
-
-			assert.Equal(t, api.ClusterAutoscalerNoCandidates,
-				api.GetConditionByType(api.ClusterAutoscalerScaleDown, nodeStatus.Conditions).Status)
-
+		if nodeGroupStatus.Name == "ng2" {
+			assert.Equal(t, api.ClusterAutoscalerHealthy, nodeGroupStatus.Health.Status)
+			assert.Equal(t, api.ClusterAutoscalerNoCandidates, nodeGroupStatus.ScaleDown.Status)
 			ng2Checked = true
 		}
 	}
@@ -269,7 +312,7 @@ func TestMissingNodes(t *testing.T) {
 	clusterstate := NewClusterStateRegistry(provider, ClusterStateRegistryConfig{
 		MaxTotalUnreadyPercentage: 10,
 		OkTotalUnreadyCount:       1,
-	}, fakeLogRecorder, newBackoff())
+	}, fakeLogRecorder, newBackoff(), nodegroupconfig.NewDefaultNodeGroupConfigProcessor(config.NodeGroupAutoscalingOptions{MaxNodeProvisionTime: 15 * time.Minute}))
 	err := clusterstate.UpdateNodes([]*apiv1.Node{ng1_1, ng2_1}, nil, now)
 	assert.NoError(t, err)
 	assert.True(t, clusterstate.IsClusterHealthy())
@@ -277,14 +320,12 @@ func TestMissingNodes(t *testing.T) {
 	assert.False(t, clusterstate.IsNodeGroupHealthy("ng1"))
 
 	status := clusterstate.GetStatus(now)
-	assert.Equal(t, api.ClusterAutoscalerHealthy,
-		api.GetConditionByType(api.ClusterAutoscalerHealth, status.ClusterwideConditions).Status)
-	assert.Equal(t, 2, len(status.NodeGroupStatuses))
+	assert.Equal(t, api.ClusterAutoscalerHealthy, status.ClusterWide.Health.Status)
+	assert.Equal(t, 2, len(status.NodeGroups))
 	ng1Checked := false
-	for _, nodeStatus := range status.NodeGroupStatuses {
-		if nodeStatus.ProviderID == "ng1" {
-			assert.Equal(t, api.ClusterAutoscalerUnhealthy,
-				api.GetConditionByType(api.ClusterAutoscalerHealth, nodeStatus.Conditions).Status)
+	for _, nodeGroupStatus := range status.NodeGroups {
+		if nodeGroupStatus.Name == "ng1" {
+			assert.Equal(t, api.ClusterAutoscalerUnhealthy, nodeGroupStatus.Health.Status)
 			ng1Checked = true
 		}
 	}
@@ -311,7 +352,7 @@ func TestTooManyUnready(t *testing.T) {
 	clusterstate := NewClusterStateRegistry(provider, ClusterStateRegistryConfig{
 		MaxTotalUnreadyPercentage: 10,
 		OkTotalUnreadyCount:       1,
-	}, fakeLogRecorder, newBackoff())
+	}, fakeLogRecorder, newBackoff(), nodegroupconfig.NewDefaultNodeGroupConfigProcessor(config.NodeGroupAutoscalingOptions{MaxNodeProvisionTime: 15 * time.Minute}))
 	err := clusterstate.UpdateNodes([]*apiv1.Node{ng1_1, ng2_1}, nil, now)
 	assert.NoError(t, err)
 	assert.False(t, clusterstate.IsClusterHealthy())
@@ -340,13 +381,14 @@ func TestUnreadyLongAfterCreation(t *testing.T) {
 	clusterstate := NewClusterStateRegistry(provider, ClusterStateRegistryConfig{
 		MaxTotalUnreadyPercentage: 10,
 		OkTotalUnreadyCount:       1,
-	}, fakeLogRecorder, newBackoff())
+	}, fakeLogRecorder, newBackoff(), nodegroupconfig.NewDefaultNodeGroupConfigProcessor(config.NodeGroupAutoscalingOptions{MaxNodeProvisionTime: 15 * time.Minute}))
 	err := clusterstate.UpdateNodes([]*apiv1.Node{ng1_1, ng2_1}, nil, now)
 	assert.NoError(t, err)
-	assert.Equal(t, 1, clusterstate.GetClusterReadiness().Unready)
-	assert.Equal(t, 0, clusterstate.GetClusterReadiness().NotStarted)
-	upcoming := clusterstate.GetUpcomingNodes()
+	assert.Equal(t, 1, len(clusterstate.GetClusterReadiness().Unready))
+	assert.Equal(t, 0, len(clusterstate.GetClusterReadiness().NotStarted))
+	upcoming, upcomingRegistered := clusterstate.GetUpcomingNodes()
 	assert.Equal(t, 0, upcoming["ng1"])
+	assert.Empty(t, upcomingRegistered["ng1"])
 }
 
 func TestNotStarted(t *testing.T) {
@@ -371,25 +413,25 @@ func TestNotStarted(t *testing.T) {
 	clusterstate := NewClusterStateRegistry(provider, ClusterStateRegistryConfig{
 		MaxTotalUnreadyPercentage: 10,
 		OkTotalUnreadyCount:       1,
-	}, fakeLogRecorder, newBackoff())
+	}, fakeLogRecorder, newBackoff(), nodegroupconfig.NewDefaultNodeGroupConfigProcessor(config.NodeGroupAutoscalingOptions{MaxNodeProvisionTime: 15 * time.Minute}))
 	err := clusterstate.UpdateNodes([]*apiv1.Node{ng1_1, ng2_1}, nil, now)
 	assert.NoError(t, err)
-	assert.Equal(t, 1, clusterstate.GetClusterReadiness().NotStarted)
-	assert.Equal(t, 1, clusterstate.GetClusterReadiness().Ready)
+	assert.Equal(t, 1, len(clusterstate.GetClusterReadiness().NotStarted))
+	assert.Equal(t, 1, len(clusterstate.GetClusterReadiness().Ready))
 
 	// node ng2_1 moves condition to ready
 	SetNodeReadyState(ng2_1, true, now.Add(-4*time.Minute))
 	err = clusterstate.UpdateNodes([]*apiv1.Node{ng1_1, ng2_1}, nil, now)
 	assert.NoError(t, err)
-	assert.Equal(t, 1, clusterstate.GetClusterReadiness().NotStarted)
-	assert.Equal(t, 1, clusterstate.GetClusterReadiness().Ready)
+	assert.Equal(t, 1, len(clusterstate.GetClusterReadiness().NotStarted))
+	assert.Equal(t, 1, len(clusterstate.GetClusterReadiness().Ready))
 
 	// node ng2_1 no longer has the taint
 	RemoveNodeNotReadyTaint(ng2_1)
 	err = clusterstate.UpdateNodes([]*apiv1.Node{ng1_1, ng2_1}, nil, now)
 	assert.NoError(t, err)
-	assert.Equal(t, 0, clusterstate.GetClusterReadiness().NotStarted)
-	assert.Equal(t, 2, clusterstate.GetClusterReadiness().Ready)
+	assert.Equal(t, 0, len(clusterstate.GetClusterReadiness().NotStarted))
+	assert.Equal(t, 2, len(clusterstate.GetClusterReadiness().Ready))
 }
 
 func TestExpiredScaleUp(t *testing.T) {
@@ -408,9 +450,8 @@ func TestExpiredScaleUp(t *testing.T) {
 	clusterstate := NewClusterStateRegistry(provider, ClusterStateRegistryConfig{
 		MaxTotalUnreadyPercentage: 10,
 		OkTotalUnreadyCount:       1,
-		MaxNodeProvisionTime:      2 * time.Minute,
-	}, fakeLogRecorder, newBackoff())
-	clusterstate.RegisterOrUpdateScaleUp(provider.GetNodeGroup("ng1"), 4, now.Add(-3*time.Minute))
+	}, fakeLogRecorder, newBackoff(), nodegroupconfig.NewDefaultNodeGroupConfigProcessor(config.NodeGroupAutoscalingOptions{MaxNodeProvisionTime: 2 * time.Minute}))
+	clusterstate.RegisterScaleUp(provider.GetNodeGroup("ng1"), 4, now.Add(-3*time.Minute))
 	err := clusterstate.UpdateNodes([]*apiv1.Node{ng1_1}, nil, now)
 	assert.NoError(t, err)
 	assert.True(t, clusterstate.IsClusterHealthy())
@@ -434,16 +475,9 @@ func TestRegisterScaleDown(t *testing.T) {
 	clusterstate := NewClusterStateRegistry(provider, ClusterStateRegistryConfig{
 		MaxTotalUnreadyPercentage: 10,
 		OkTotalUnreadyCount:       1,
-	}, fakeLogRecorder, newBackoff())
-
+	}, fakeLogRecorder, newBackoff(), nodegroupconfig.NewDefaultNodeGroupConfigProcessor(config.NodeGroupAutoscalingOptions{MaxNodeProvisionTime: 15 * time.Minute}))
 	now := time.Now()
-
-	clusterstate.RegisterScaleDown(&ScaleDownRequest{
-		NodeGroup:          provider.GetNodeGroup("ng1"),
-		NodeName:           "ng1-1",
-		ExpectedDeleteTime: now.Add(time.Minute),
-		Time:               now,
-	})
+	clusterstate.RegisterScaleDown(provider.GetNodeGroup("ng1"), "ng1-1", now.Add(time.Minute), now)
 	assert.Equal(t, 1, len(clusterstate.scaleDownRequests))
 	clusterstate.updateScaleRequests(now.Add(5 * time.Minute))
 	assert.Equal(t, 0, len(clusterstate.scaleDownRequests))
@@ -481,22 +515,83 @@ func TestUpcomingNodes(t *testing.T) {
 	provider.AddNodeGroup("ng4", 1, 10, 1)
 	provider.AddNode("ng4", ng4_1)
 
+	// One node is already there, for a second nde deletion / draining was already started.
+	ng5_1 := BuildTestNode("ng5-1", 1000, 1000)
+	SetNodeReadyState(ng5_1, true, now.Add(-time.Minute))
+	ng5_2 := BuildTestNode("ng5-2", 1000, 1000)
+	SetNodeReadyState(ng5_2, true, now.Add(-time.Minute))
+	ng5_2.Spec.Taints = []apiv1.Taint{
+		{
+			Key:    taints.ToBeDeletedTaint,
+			Value:  fmt.Sprint(time.Now().Unix()),
+			Effect: apiv1.TaintEffectNoSchedule,
+		},
+	}
+	provider.AddNodeGroup("ng5", 1, 10, 2)
+	provider.AddNode("ng5", ng5_1)
+	provider.AddNode("ng5", ng5_2)
+
 	assert.NotNil(t, provider)
 	fakeClient := &fake.Clientset{}
 	fakeLogRecorder, _ := utils.NewStatusMapRecorder(fakeClient, "kube-system", kube_record.NewFakeRecorder(5), false, "my-cool-configmap")
 	clusterstate := NewClusterStateRegistry(provider, ClusterStateRegistryConfig{
 		MaxTotalUnreadyPercentage: 10,
 		OkTotalUnreadyCount:       1,
-	}, fakeLogRecorder, newBackoff())
-	err := clusterstate.UpdateNodes([]*apiv1.Node{ng1_1, ng2_1, ng3_1, ng4_1}, nil, now)
+	}, fakeLogRecorder, newBackoff(), nodegroupconfig.NewDefaultNodeGroupConfigProcessor(config.NodeGroupAutoscalingOptions{MaxNodeProvisionTime: 15 * time.Minute}))
+	err := clusterstate.UpdateNodes([]*apiv1.Node{ng1_1, ng2_1, ng3_1, ng4_1, ng5_1, ng5_2}, nil, now)
 	assert.NoError(t, err)
 	assert.Empty(t, clusterstate.GetScaleUpFailures())
 
-	upcomingNodes := clusterstate.GetUpcomingNodes()
+	upcomingNodes, upcomingRegistered := clusterstate.GetUpcomingNodes()
 	assert.Equal(t, 6, upcomingNodes["ng1"])
+	assert.Empty(t, upcomingRegistered["ng1"]) // Only unregistered.
 	assert.Equal(t, 1, upcomingNodes["ng2"])
+	assert.Empty(t, upcomingRegistered["ng2"]) // Only unregistered.
 	assert.Equal(t, 2, upcomingNodes["ng3"])
+	assert.Equal(t, []string{"ng3-1"}, upcomingRegistered["ng3"]) // 1 registered, 1 unregistered.
 	assert.NotContains(t, upcomingNodes, "ng4")
+	assert.NotContains(t, upcomingRegistered, "ng4")
+	assert.Equal(t, 0, upcomingNodes["ng5"])
+	assert.Empty(t, upcomingRegistered["ng5"])
+}
+
+func TestTaintBasedNodeDeletion(t *testing.T) {
+	// Create a new Cloud Provider that does not implement the HasInstance check
+	// it will return the ErrNotImplemented error instead.
+	provider := testprovider.NewTestNodeDeletionDetectionCloudProvider(nil, nil,
+		func(string) (bool, error) { return false, cloudprovider.ErrNotImplemented })
+	now := time.Now()
+
+	// One node is already there, for a second nde deletion / draining was already started.
+	ng1_1 := BuildTestNode("ng1-1", 1000, 1000)
+	SetNodeReadyState(ng1_1, true, now.Add(-time.Minute))
+	ng1_2 := BuildTestNode("ng1-2", 1000, 1000)
+	SetNodeReadyState(ng1_2, true, now.Add(-time.Minute))
+	ng1_2.Spec.Taints = []apiv1.Taint{
+		{
+			Key:    taints.ToBeDeletedTaint,
+			Value:  fmt.Sprint(time.Now().Unix()),
+			Effect: apiv1.TaintEffectNoSchedule,
+		},
+	}
+	provider.AddNodeGroup("ng1", 1, 10, 2)
+	provider.AddNode("ng1", ng1_1)
+	provider.AddNode("ng1", ng1_2)
+
+	assert.NotNil(t, provider)
+	fakeClient := &fake.Clientset{}
+	fakeLogRecorder, _ := utils.NewStatusMapRecorder(fakeClient, "kube-system", kube_record.NewFakeRecorder(5), false, "my-cool-configmap")
+	clusterstate := NewClusterStateRegistry(provider, ClusterStateRegistryConfig{
+		MaxTotalUnreadyPercentage: 10,
+		OkTotalUnreadyCount:       1,
+	}, fakeLogRecorder, newBackoff(), nodegroupconfig.NewDefaultNodeGroupConfigProcessor(config.NodeGroupAutoscalingOptions{MaxNodeProvisionTime: 15 * time.Minute}))
+	err := clusterstate.UpdateNodes([]*apiv1.Node{ng1_1, ng1_2}, nil, now)
+	assert.NoError(t, err)
+	assert.Empty(t, clusterstate.GetScaleUpFailures())
+
+	upcomingNodes, upcomingRegistered := clusterstate.GetUpcomingNodes()
+	assert.Equal(t, 1, upcomingNodes["ng1"])
+	assert.Empty(t, upcomingRegistered["ng1"]) // Only unregistered.
 }
 
 func TestIncorrectSize(t *testing.T) {
@@ -510,7 +605,7 @@ func TestIncorrectSize(t *testing.T) {
 	clusterstate := NewClusterStateRegistry(provider, ClusterStateRegistryConfig{
 		MaxTotalUnreadyPercentage: 10,
 		OkTotalUnreadyCount:       1,
-	}, fakeLogRecorder, newBackoff())
+	}, fakeLogRecorder, newBackoff(), nodegroupconfig.NewDefaultNodeGroupConfigProcessor(config.NodeGroupAutoscalingOptions{MaxNodeProvisionTime: 15 * time.Minute}))
 	now := time.Now()
 	clusterstate.UpdateNodes([]*apiv1.Node{ng1_1}, nil, now.Add(-5*time.Minute))
 	incorrect := clusterstate.incorrectNodeGroupSizes["ng1"]
@@ -546,15 +641,15 @@ func TestUnregisteredNodes(t *testing.T) {
 	clusterstate := NewClusterStateRegistry(provider, ClusterStateRegistryConfig{
 		MaxTotalUnreadyPercentage: 10,
 		OkTotalUnreadyCount:       1,
-		MaxNodeProvisionTime:      10 * time.Second,
-	}, fakeLogRecorder, newBackoff())
+	}, fakeLogRecorder, newBackoff(), nodegroupconfig.NewDefaultNodeGroupConfigProcessor(config.NodeGroupAutoscalingOptions{MaxNodeProvisionTime: 10 * time.Second}))
 	err := clusterstate.UpdateNodes([]*apiv1.Node{ng1_1}, nil, time.Now().Add(-time.Minute))
 
 	assert.NoError(t, err)
 	assert.Equal(t, 1, len(clusterstate.GetUnregisteredNodes()))
 	assert.Equal(t, "ng1-2", clusterstate.GetUnregisteredNodes()[0].Node.Name)
-	upcomingNodes := clusterstate.GetUpcomingNodes()
+	upcomingNodes, upcomingRegistered := clusterstate.GetUpcomingNodes()
 	assert.Equal(t, 1, upcomingNodes["ng1"])
+	assert.Empty(t, upcomingRegistered["ng1"]) // Unregistered only.
 
 	// The node didn't come up in MaxNodeProvisionTime, it should no longer be
 	// counted as upcoming (but it is still an unregistered node)
@@ -562,117 +657,110 @@ func TestUnregisteredNodes(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 1, len(clusterstate.GetUnregisteredNodes()))
 	assert.Equal(t, "ng1-2", clusterstate.GetUnregisteredNodes()[0].Node.Name)
-	upcomingNodes = clusterstate.GetUpcomingNodes()
+	upcomingNodes, upcomingRegistered = clusterstate.GetUpcomingNodes()
 	assert.Equal(t, 0, len(upcomingNodes))
+	assert.Empty(t, upcomingRegistered["ng1"])
 
 	err = clusterstate.UpdateNodes([]*apiv1.Node{ng1_1, ng1_2}, nil, time.Now().Add(time.Minute))
 	assert.NoError(t, err)
 	assert.Equal(t, 0, len(clusterstate.GetUnregisteredNodes()))
 }
 
-func TestUpdateLastTransitionTimes(t *testing.T) {
-	now := metav1.Time{Time: time.Now()}
-	later := metav1.Time{Time: now.Time.Add(10 * time.Second)}
-	oldStatus := &api.ClusterAutoscalerStatus{
-		ClusterwideConditions: make([]api.ClusterAutoscalerCondition, 0),
-		NodeGroupStatuses:     make([]api.NodeGroupStatus, 0),
-	}
-	oldStatus.ClusterwideConditions = append(
-		oldStatus.ClusterwideConditions,
-		api.ClusterAutoscalerCondition{
-			Type:               api.ClusterAutoscalerHealth,
-			Status:             api.ClusterAutoscalerHealthy,
-			LastProbeTime:      now,
-			LastTransitionTime: now,
-		})
-	oldStatus.ClusterwideConditions = append(
-		oldStatus.ClusterwideConditions,
-		api.ClusterAutoscalerCondition{
-			Type:               api.ClusterAutoscalerScaleUp,
-			Status:             api.ClusterAutoscalerInProgress,
-			LastProbeTime:      now,
-			LastTransitionTime: now,
-		})
-	oldStatus.NodeGroupStatuses = append(
-		oldStatus.NodeGroupStatuses,
-		api.NodeGroupStatus{
-			ProviderID: "ng1",
-			Conditions: oldStatus.ClusterwideConditions,
-		})
+func TestCloudProviderDeletedNodes(t *testing.T) {
+	now := time.Now()
+	ng1_1 := BuildTestNode("ng1-1", 1000, 1000)
+	SetNodeReadyState(ng1_1, true, now.Add(-time.Minute))
+	ng1_1.Spec.ProviderID = "ng1-1"
+	ng1_2 := BuildTestNode("ng1-2", 1000, 1000)
+	SetNodeReadyState(ng1_2, true, now.Add(-time.Minute))
+	ng1_2.Spec.ProviderID = "ng1-2"
+	// No Node Group - Not Autoscaled Node
+	noNgNode := BuildTestNode("no-ng", 1000, 1000)
+	SetNodeReadyState(noNgNode, true, now.Add(-time.Minute))
 
-	newStatus := &api.ClusterAutoscalerStatus{
-		ClusterwideConditions: make([]api.ClusterAutoscalerCondition, 0),
-		NodeGroupStatuses:     make([]api.NodeGroupStatus, 0),
-	}
-	newStatus.ClusterwideConditions = append(
-		newStatus.ClusterwideConditions,
-		api.ClusterAutoscalerCondition{
-			Type:          api.ClusterAutoscalerHealth,
-			Status:        api.ClusterAutoscalerHealthy,
-			LastProbeTime: later,
-		})
-	newStatus.ClusterwideConditions = append(
-		newStatus.ClusterwideConditions,
-		api.ClusterAutoscalerCondition{
-			Type:          api.ClusterAutoscalerScaleUp,
-			Status:        api.ClusterAutoscalerNotNeeded,
-			LastProbeTime: later,
-		})
-	newStatus.ClusterwideConditions = append(
-		newStatus.ClusterwideConditions,
-		api.ClusterAutoscalerCondition{
-			Type:          api.ClusterAutoscalerScaleDown,
-			Status:        api.ClusterAutoscalerNoCandidates,
-			LastProbeTime: later,
-		})
-	newStatus.NodeGroupStatuses = append(
-		newStatus.NodeGroupStatuses,
-		api.NodeGroupStatus{
-			ProviderID: "ng2",
-			Conditions: newStatus.ClusterwideConditions,
-		})
-	newStatus.NodeGroupStatuses = append(
-		newStatus.NodeGroupStatuses,
-		api.NodeGroupStatus{
-			ProviderID: "ng1",
-			Conditions: newStatus.ClusterwideConditions,
-		})
-	updateLastTransition(oldStatus, newStatus)
+	noNgNode.Spec.ProviderID = "no-ng"
+	provider := testprovider.NewTestCloudProvider(nil, nil)
+	provider.AddNodeGroup("ng1", 1, 10, 2)
+	provider.AddNode("ng1", ng1_1)
+	provider.AddNode("ng1", ng1_2)
+	provider.AddNode("no_ng", noNgNode)
 
-	for _, cwCondition := range newStatus.ClusterwideConditions {
-		switch cwCondition.Type {
-		case api.ClusterAutoscalerHealth:
-			// Status has not changed
-			assert.Equal(t, now, cwCondition.LastTransitionTime)
-		case api.ClusterAutoscalerScaleUp:
-			// Status has changed
-			assert.Equal(t, later, cwCondition.LastTransitionTime)
-		case api.ClusterAutoscalerScaleDown:
-			// No old status information
-			assert.Equal(t, later, cwCondition.LastTransitionTime)
-		}
-	}
+	fakeClient := &fake.Clientset{}
+	fakeLogRecorder, _ := utils.NewStatusMapRecorder(fakeClient, "kube-system", kube_record.NewFakeRecorder(5), false, "my-cool-configmap")
+	clusterstate := NewClusterStateRegistry(provider, ClusterStateRegistryConfig{
+		MaxTotalUnreadyPercentage: 10,
+		OkTotalUnreadyCount:       1,
+	}, fakeLogRecorder, newBackoff(), nodegroupconfig.NewDefaultNodeGroupConfigProcessor(config.NodeGroupAutoscalingOptions{MaxNodeProvisionTime: 10 * time.Second}))
+	now.Add(time.Minute)
+	err := clusterstate.UpdateNodes([]*apiv1.Node{ng1_1, ng1_2, noNgNode}, nil, now)
 
-	expectedNgTimestamps := make(map[string](map[api.ClusterAutoscalerConditionType]metav1.Time), 0)
-	// Same as cluster-wide
-	expectedNgTimestamps["ng1"] = map[api.ClusterAutoscalerConditionType]metav1.Time{
-		api.ClusterAutoscalerHealth:    now,
-		api.ClusterAutoscalerScaleUp:   later,
-		api.ClusterAutoscalerScaleDown: later,
-	}
-	// New node group - everything should have latest timestamp as last transition time
-	expectedNgTimestamps["ng2"] = map[api.ClusterAutoscalerConditionType]metav1.Time{
-		api.ClusterAutoscalerHealth:    later,
-		api.ClusterAutoscalerScaleUp:   later,
-		api.ClusterAutoscalerScaleDown: later,
-	}
+	// Nodes are registered correctly between Kubernetes and cloud provider.
+	assert.NoError(t, err)
+	assert.Equal(t, 0, len(GetCloudProviderDeletedNodeNames(clusterstate)))
 
-	for _, ng := range newStatus.NodeGroupStatuses {
-		expectations := expectedNgTimestamps[ng.ProviderID]
-		for _, ngCondition := range ng.Conditions {
-			assert.Equal(t, expectations[ngCondition.Type], ngCondition.LastTransitionTime)
-		}
-	}
+	// The node was removed from Cloud Provider
+	// should be counted as Deleted by cluster state
+	nodeGroup, err := provider.NodeGroupForNode(ng1_2)
+	assert.NoError(t, err)
+	provider.DeleteNode(ng1_2)
+	clusterstate.InvalidateNodeInstancesCacheEntry(nodeGroup)
+	now.Add(time.Minute)
+
+	err = clusterstate.UpdateNodes([]*apiv1.Node{ng1_1, ng1_2, noNgNode}, nil, now)
+	assert.NoError(t, err)
+	assert.Equal(t, 1, len(GetCloudProviderDeletedNodeNames(clusterstate)))
+	assert.Equal(t, "ng1-2", GetCloudProviderDeletedNodeNames(clusterstate)[0])
+	assert.Equal(t, 1, len(clusterstate.GetClusterReadiness().Deleted))
+
+	// The node is removed from Kubernetes
+	now.Add(time.Minute)
+
+	err = clusterstate.UpdateNodes([]*apiv1.Node{ng1_1, noNgNode}, nil, now)
+	assert.NoError(t, err)
+	assert.Equal(t, 0, len(GetCloudProviderDeletedNodeNames(clusterstate)))
+
+	// New Node is added afterwards
+	ng1_3 := BuildTestNode("ng1-3", 1000, 1000)
+	SetNodeReadyState(ng1_3, true, now.Add(-time.Minute))
+	ng1_3.Spec.ProviderID = "ng1-3"
+	provider.AddNode("ng1", ng1_3)
+	clusterstate.InvalidateNodeInstancesCacheEntry(nodeGroup)
+	now.Add(time.Minute)
+
+	err = clusterstate.UpdateNodes([]*apiv1.Node{ng1_1, ng1_3, noNgNode}, nil, now)
+	assert.NoError(t, err)
+	assert.Equal(t, 0, len(GetCloudProviderDeletedNodeNames(clusterstate)))
+
+	// Newly added node is removed from Cloud Provider
+	// should be counted as Deleted by cluster state
+	nodeGroup, err = provider.NodeGroupForNode(ng1_3)
+	assert.NoError(t, err)
+	provider.DeleteNode(ng1_3)
+	clusterstate.InvalidateNodeInstancesCacheEntry(nodeGroup)
+	now.Add(time.Minute)
+
+	err = clusterstate.UpdateNodes([]*apiv1.Node{ng1_1, noNgNode, ng1_3}, nil, now)
+	assert.NoError(t, err)
+	assert.Equal(t, 1, len(GetCloudProviderDeletedNodeNames(clusterstate)))
+	assert.Equal(t, "ng1-3", GetCloudProviderDeletedNodeNames(clusterstate)[0])
+	assert.Equal(t, 1, len(clusterstate.GetClusterReadiness().Deleted))
+
+	// Confirm that previously identified deleted Cloud Provider nodes are still included
+	// until it is removed from Kubernetes
+	now.Add(time.Minute)
+
+	err = clusterstate.UpdateNodes([]*apiv1.Node{ng1_1, noNgNode, ng1_3}, nil, now)
+	assert.NoError(t, err)
+	assert.Equal(t, 1, len(GetCloudProviderDeletedNodeNames(clusterstate)))
+	assert.Equal(t, "ng1-3", GetCloudProviderDeletedNodeNames(clusterstate)[0])
+	assert.Equal(t, 1, len(clusterstate.GetClusterReadiness().Deleted))
+
+	// The node is removed from Kubernetes
+	now.Add(time.Minute)
+
+	err = clusterstate.UpdateNodes([]*apiv1.Node{ng1_1, noNgNode}, nil, now)
+	assert.NoError(t, err)
+	assert.Equal(t, 0, len(GetCloudProviderDeletedNodeNames(clusterstate)))
 }
 
 func TestScaleUpBackoff(t *testing.T) {
@@ -698,37 +786,76 @@ func TestScaleUpBackoff(t *testing.T) {
 	clusterstate := NewClusterStateRegistry(provider, ClusterStateRegistryConfig{
 		MaxTotalUnreadyPercentage: 10,
 		OkTotalUnreadyCount:       1,
-		MaxNodeProvisionTime:      120 * time.Second,
-	}, fakeLogRecorder, newBackoff())
+	}, fakeLogRecorder, newBackoff(), nodegroupconfig.NewDefaultNodeGroupConfigProcessor(config.NodeGroupAutoscalingOptions{MaxNodeProvisionTime: 120 * time.Second}))
 
 	// After failed scale-up, node group should be still healthy, but should backoff from scale-ups
-	clusterstate.RegisterOrUpdateScaleUp(provider.GetNodeGroup("ng1"), 1, now.Add(-180*time.Second))
+	clusterstate.RegisterScaleUp(provider.GetNodeGroup("ng1"), 1, now.Add(-180*time.Second))
 	err := clusterstate.UpdateNodes([]*apiv1.Node{ng1_1, ng1_2, ng1_3}, nil, now)
 	assert.NoError(t, err)
 	assert.True(t, clusterstate.IsClusterHealthy())
 	assert.True(t, clusterstate.IsNodeGroupHealthy("ng1"))
-	assert.False(t, clusterstate.IsNodeGroupSafeToScaleUp(ng1, now))
+	assert.Equal(t, NodeGroupScalingSafety{
+		SafeToScale: false,
+		Healthy:     true,
+		BackoffStatus: backoff.Status{
+			IsBackedOff: true,
+			ErrorInfo: cloudprovider.InstanceErrorInfo{
+				ErrorClass:   cloudprovider.OtherErrorClass,
+				ErrorCode:    "timeout",
+				ErrorMessage: "Scale-up timed out for node group ng1 after 3m0s",
+			},
+		},
+	}, clusterstate.NodeGroupScaleUpSafety(ng1, now))
+	assert.Equal(t, backoff.Status{
+		IsBackedOff: true,
+		ErrorInfo: cloudprovider.InstanceErrorInfo{
+			ErrorClass:   cloudprovider.OtherErrorClass,
+			ErrorCode:    "timeout",
+			ErrorMessage: "Scale-up timed out for node group ng1 after 3m0s",
+		}}, clusterstate.backoff.BackoffStatus(ng1, nil, now))
 
 	// Backoff should expire after timeout
-	now = now.Add(InitialNodeGroupBackoffDuration).Add(time.Second)
+	now = now.Add(5 * time.Minute /*InitialNodeGroupBackoffDuration*/).Add(time.Second)
 	assert.True(t, clusterstate.IsClusterHealthy())
 	assert.True(t, clusterstate.IsNodeGroupHealthy("ng1"))
-	assert.True(t, clusterstate.IsNodeGroupSafeToScaleUp(ng1, now))
+	assert.Equal(t, NodeGroupScalingSafety{SafeToScale: true, Healthy: true}, clusterstate.NodeGroupScaleUpSafety(ng1, now))
 
 	// Another failed scale up should cause longer backoff
-	clusterstate.RegisterOrUpdateScaleUp(provider.GetNodeGroup("ng1"), 1, now.Add(-121*time.Second))
+	clusterstate.RegisterScaleUp(provider.GetNodeGroup("ng1"), 1, now.Add(-121*time.Second))
 
 	err = clusterstate.UpdateNodes([]*apiv1.Node{ng1_1, ng1_2, ng1_3}, nil, now)
 	assert.NoError(t, err)
 	assert.True(t, clusterstate.IsClusterHealthy())
 	assert.True(t, clusterstate.IsNodeGroupHealthy("ng1"))
-	assert.False(t, clusterstate.IsNodeGroupSafeToScaleUp(ng1, now))
+	assert.Equal(t, NodeGroupScalingSafety{
+		SafeToScale: false,
+		Healthy:     true,
+		BackoffStatus: backoff.Status{
+			IsBackedOff: true,
+			ErrorInfo: cloudprovider.InstanceErrorInfo{
+				ErrorClass:   cloudprovider.OtherErrorClass,
+				ErrorCode:    "timeout",
+				ErrorMessage: "Scale-up timed out for node group ng1 after 2m1s",
+			},
+		},
+	}, clusterstate.NodeGroupScaleUpSafety(ng1, now))
 
-	now = now.Add(InitialNodeGroupBackoffDuration).Add(time.Second)
-	assert.False(t, clusterstate.IsNodeGroupSafeToScaleUp(ng1, now))
+	now = now.Add(5 * time.Minute /*InitialNodeGroupBackoffDuration*/).Add(time.Second)
+	assert.Equal(t, NodeGroupScalingSafety{
+		SafeToScale: false,
+		Healthy:     true,
+		BackoffStatus: backoff.Status{
+			IsBackedOff: true,
+			ErrorInfo: cloudprovider.InstanceErrorInfo{
+				ErrorClass:   cloudprovider.OtherErrorClass,
+				ErrorCode:    "timeout",
+				ErrorMessage: "Scale-up timed out for node group ng1 after 2m1s",
+			},
+		},
+	}, clusterstate.NodeGroupScaleUpSafety(ng1, now))
 
-	// The backoff should be cleared after a successful scale-up
-	clusterstate.RegisterOrUpdateScaleUp(provider.GetNodeGroup("ng1"), 1, now)
+	// After successful scale-up, node group should still be backed off
+	clusterstate.RegisterScaleUp(provider.GetNodeGroup("ng1"), 1, now)
 	ng1_4 := BuildTestNode("ng1-4", 1000, 1000)
 	SetNodeReadyState(ng1_4, true, now.Add(-1*time.Minute))
 	provider.AddNode("ng1", ng1_4)
@@ -736,8 +863,25 @@ func TestScaleUpBackoff(t *testing.T) {
 	assert.NoError(t, err)
 	assert.True(t, clusterstate.IsClusterHealthy())
 	assert.True(t, clusterstate.IsNodeGroupHealthy("ng1"))
-	assert.True(t, clusterstate.IsNodeGroupSafeToScaleUp(ng1, now))
-	assert.False(t, clusterstate.backoff.IsBackedOff(ng1, nil, now))
+	assert.Equal(t, NodeGroupScalingSafety{
+		SafeToScale: false,
+		Healthy:     true,
+		BackoffStatus: backoff.Status{
+			IsBackedOff: true,
+			ErrorInfo: cloudprovider.InstanceErrorInfo{
+				ErrorClass:   cloudprovider.OtherErrorClass,
+				ErrorCode:    "timeout",
+				ErrorMessage: "Scale-up timed out for node group ng1 after 2m1s",
+			},
+		},
+	}, clusterstate.NodeGroupScaleUpSafety(ng1, now))
+	assert.Equal(t, backoff.Status{
+		IsBackedOff: true,
+		ErrorInfo: cloudprovider.InstanceErrorInfo{
+			ErrorClass:   cloudprovider.OtherErrorClass,
+			ErrorCode:    "timeout",
+			ErrorMessage: "Scale-up timed out for node group ng1 after 2m1s",
+		}}, clusterstate.backoff.BackoffStatus(ng1, nil, now))
 }
 
 func TestGetClusterSize(t *testing.T) {
@@ -766,7 +910,7 @@ func TestGetClusterSize(t *testing.T) {
 	clusterstate := NewClusterStateRegistry(provider, ClusterStateRegistryConfig{
 		MaxTotalUnreadyPercentage: 10,
 		OkTotalUnreadyCount:       1,
-	}, fakeLogRecorder, newBackoff())
+	}, fakeLogRecorder, newBackoff(), nodegroupconfig.NewDefaultNodeGroupConfigProcessor(config.NodeGroupAutoscalingOptions{MaxNodeProvisionTime: 15 * time.Minute}))
 
 	// There are 2 actual nodes in 2 node groups with target sizes of 5 and 1.
 	clusterstate.UpdateNodes([]*apiv1.Node{ng1_1, ng2_1, notAutoscaledNode}, nil, now)
@@ -803,6 +947,7 @@ func TestUpdateScaleUp(t *testing.T) {
 
 	provider := testprovider.NewTestCloudProvider(nil, nil)
 	provider.AddNodeGroup("ng1", 1, 10, 5)
+	provider.AddNodeGroup("ng2", 1, 10, 5)
 	fakeClient := &fake.Clientset{}
 	fakeLogRecorder, _ := utils.NewStatusMapRecorder(fakeClient, "kube-system", kube_record.NewFakeRecorder(5), false, "my-cool-configmap")
 	clusterstate := NewClusterStateRegistry(
@@ -810,34 +955,36 @@ func TestUpdateScaleUp(t *testing.T) {
 		ClusterStateRegistryConfig{
 			MaxTotalUnreadyPercentage: 10,
 			OkTotalUnreadyCount:       1,
-			MaxNodeProvisionTime:      10 * time.Second,
 		},
 		fakeLogRecorder,
-		newBackoff())
+		newBackoff(),
+		nodegroupconfig.NewDefaultNodeGroupConfigProcessor(config.NodeGroupAutoscalingOptions{MaxNodeProvisionTime: 10 * time.Second}),
+	)
 
-	clusterstate.RegisterOrUpdateScaleUp(provider.GetNodeGroup("ng1"), 100, now)
+	// Test cases for `RegisterScaleUp`
+	clusterstate.RegisterScaleUp(provider.GetNodeGroup("ng1"), 100, now)
 	assert.Equal(t, clusterstate.scaleUpRequests["ng1"].Increase, 100)
 	assert.Equal(t, clusterstate.scaleUpRequests["ng1"].Time, now)
 	assert.Equal(t, clusterstate.scaleUpRequests["ng1"].ExpectedAddTime, now.Add(10*time.Second))
 
 	// expect no change of times on negative delta
-	clusterstate.RegisterOrUpdateScaleUp(provider.GetNodeGroup("ng1"), -20, later)
+	clusterstate.RegisterScaleUp(provider.GetNodeGroup("ng1"), -20, later)
 	assert.Equal(t, clusterstate.scaleUpRequests["ng1"].Increase, 80)
 	assert.Equal(t, clusterstate.scaleUpRequests["ng1"].Time, now)
 	assert.Equal(t, clusterstate.scaleUpRequests["ng1"].ExpectedAddTime, now.Add(10*time.Second))
 
 	// update times on positive delta
-	clusterstate.RegisterOrUpdateScaleUp(provider.GetNodeGroup("ng1"), 30, later)
+	clusterstate.RegisterScaleUp(provider.GetNodeGroup("ng1"), 30, later)
 	assert.Equal(t, clusterstate.scaleUpRequests["ng1"].Increase, 110)
 	assert.Equal(t, clusterstate.scaleUpRequests["ng1"].Time, later)
 	assert.Equal(t, clusterstate.scaleUpRequests["ng1"].ExpectedAddTime, later.Add(10*time.Second))
 
 	// if we get below 0 scalup is deleted
-	clusterstate.RegisterOrUpdateScaleUp(provider.GetNodeGroup("ng1"), -200, now)
+	clusterstate.RegisterScaleUp(provider.GetNodeGroup("ng1"), -200, now)
 	assert.Nil(t, clusterstate.scaleUpRequests["ng1"])
 
 	// If new scalup is registered with negative delta nothing should happen
-	clusterstate.RegisterOrUpdateScaleUp(provider.GetNodeGroup("ng1"), -200, now)
+	clusterstate.RegisterScaleUp(provider.GetNodeGroup("ng1"), -200, now)
 	assert.Nil(t, clusterstate.scaleUpRequests["ng1"])
 }
 
@@ -851,11 +998,11 @@ func TestScaleUpFailures(t *testing.T) {
 
 	fakeClient := &fake.Clientset{}
 	fakeLogRecorder, _ := utils.NewStatusMapRecorder(fakeClient, "kube-system", kube_record.NewFakeRecorder(5), false, "my-cool-configmap")
-	clusterstate := NewClusterStateRegistry(provider, ClusterStateRegistryConfig{}, fakeLogRecorder, newBackoff())
+	clusterstate := NewClusterStateRegistry(provider, ClusterStateRegistryConfig{}, fakeLogRecorder, newBackoff(), nodegroupconfig.NewDefaultNodeGroupConfigProcessor(config.NodeGroupAutoscalingOptions{MaxNodeProvisionTime: 15 * time.Minute}))
 
-	clusterstate.RegisterFailedScaleUp(provider.GetNodeGroup("ng1"), metrics.Timeout, now)
-	clusterstate.RegisterFailedScaleUp(provider.GetNodeGroup("ng2"), metrics.Timeout, now)
-	clusterstate.RegisterFailedScaleUp(provider.GetNodeGroup("ng1"), metrics.APIError, now.Add(time.Minute))
+	clusterstate.RegisterFailedScaleUp(provider.GetNodeGroup("ng1"), string(metrics.Timeout), "", "", "", now)
+	clusterstate.RegisterFailedScaleUp(provider.GetNodeGroup("ng2"), string(metrics.Timeout), "", "", "", now)
+	clusterstate.RegisterFailedScaleUp(provider.GetNodeGroup("ng1"), string(metrics.APIError), "", "", "", now.Add(time.Minute))
 
 	failures := clusterstate.GetScaleUpFailures()
 	assert.Equal(t, map[string][]ScaleUpFailure{
@@ -873,5 +1020,363 @@ func TestScaleUpFailures(t *testing.T) {
 }
 
 func newBackoff() backoff.Backoff {
-	return backoff.NewIdBasedExponentialBackoff(InitialNodeGroupBackoffDuration, MaxNodeGroupBackoffDuration, NodeGroupBackoffResetTimeout)
+	return backoff.NewIdBasedExponentialBackoff(5*time.Minute, /*InitialNodeGroupBackoffDuration*/
+		30*time.Minute /*MaxNodeGroupBackoffDuration*/, 3*time.Hour /*NodeGroupBackoffResetTimeout*/)
+}
+
+func TestUpdateAcceptableRanges(t *testing.T) {
+	testCases := []struct {
+		name string
+
+		targetSizes      map[string]int
+		readiness        map[string]Readiness
+		scaleUpRequests  map[string]*ScaleUpRequest
+		scaledDownGroups []string
+
+		wantAcceptableRanges map[string]AcceptableRange
+	}{
+		{
+			name: "No scale-ups/scale-downs",
+			targetSizes: map[string]int{
+				"ng1": 10,
+				"ng2": 20,
+			},
+			readiness: map[string]Readiness{
+				"ng1": {Ready: make([]string, 10)},
+				"ng2": {Ready: make([]string, 20)},
+			},
+			wantAcceptableRanges: map[string]AcceptableRange{
+				"ng1": {MinNodes: 10, MaxNodes: 10, CurrentTarget: 10},
+				"ng2": {MinNodes: 20, MaxNodes: 20, CurrentTarget: 20},
+			},
+		},
+		{
+			name: "Ongoing scale-ups",
+			targetSizes: map[string]int{
+				"ng1": 10,
+				"ng2": 20,
+			},
+			readiness: map[string]Readiness{
+				"ng1": {Ready: make([]string, 10)},
+				"ng2": {Ready: make([]string, 20)},
+			},
+			scaleUpRequests: map[string]*ScaleUpRequest{
+				"ng1": {Increase: 3},
+				"ng2": {Increase: 5},
+			},
+			wantAcceptableRanges: map[string]AcceptableRange{
+				"ng1": {MinNodes: 7, MaxNodes: 10, CurrentTarget: 10},
+				"ng2": {MinNodes: 15, MaxNodes: 20, CurrentTarget: 20},
+			},
+		},
+		{
+			name: "Ongoing scale-downs",
+			targetSizes: map[string]int{
+				"ng1": 10,
+				"ng2": 20,
+			},
+			readiness: map[string]Readiness{
+				"ng1": {Ready: make([]string, 10)},
+				"ng2": {Ready: make([]string, 20)},
+			},
+			scaledDownGroups: []string{"ng1", "ng1", "ng2", "ng2", "ng2"},
+			wantAcceptableRanges: map[string]AcceptableRange{
+				"ng1": {MinNodes: 10, MaxNodes: 12, CurrentTarget: 10},
+				"ng2": {MinNodes: 20, MaxNodes: 23, CurrentTarget: 20},
+			},
+		},
+		{
+			name: "Some short unregistered nodes",
+			targetSizes: map[string]int{
+				"ng1": 10,
+				"ng2": 20,
+			},
+			readiness: map[string]Readiness{
+				"ng1": {Ready: make([]string, 8), Unregistered: make([]string, 2)},
+				"ng2": {Ready: make([]string, 17), Unregistered: make([]string, 3)},
+			},
+			wantAcceptableRanges: map[string]AcceptableRange{
+				"ng1": {MinNodes: 10, MaxNodes: 10, CurrentTarget: 10},
+				"ng2": {MinNodes: 20, MaxNodes: 20, CurrentTarget: 20},
+			},
+		},
+		{
+			name: "Some long unregistered nodes",
+			targetSizes: map[string]int{
+				"ng1": 10,
+				"ng2": 20,
+			},
+			readiness: map[string]Readiness{
+				"ng1": {Ready: make([]string, 8), LongUnregistered: make([]string, 2)},
+				"ng2": {Ready: make([]string, 17), LongUnregistered: make([]string, 3)},
+			},
+			wantAcceptableRanges: map[string]AcceptableRange{
+				"ng1": {MinNodes: 8, MaxNodes: 10, CurrentTarget: 10},
+				"ng2": {MinNodes: 17, MaxNodes: 20, CurrentTarget: 20},
+			},
+		},
+		{
+			name: "Everything together",
+			targetSizes: map[string]int{
+				"ng1": 10,
+				"ng2": 20,
+			},
+			readiness: map[string]Readiness{
+				"ng1": {Ready: make([]string, 8), Unregistered: make([]string, 1), LongUnregistered: make([]string, 2)},
+				"ng2": {Ready: make([]string, 17), Unregistered: make([]string, 3), LongUnregistered: make([]string, 4)},
+			},
+			scaleUpRequests: map[string]*ScaleUpRequest{
+				"ng1": {Increase: 3},
+				"ng2": {Increase: 5},
+			},
+			scaledDownGroups: []string{"ng1", "ng1", "ng2", "ng2", "ng2"},
+			wantAcceptableRanges: map[string]AcceptableRange{
+				"ng1": {MinNodes: 5, MaxNodes: 12, CurrentTarget: 10},
+				"ng2": {MinNodes: 11, MaxNodes: 23, CurrentTarget: 20},
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			provider := testprovider.NewTestCloudProvider(nil, nil)
+			for nodeGroupName, targetSize := range tc.targetSizes {
+				provider.AddNodeGroup(nodeGroupName, 0, 1000, targetSize)
+			}
+			var scaleDownRequests []*ScaleDownRequest
+			for _, nodeGroupName := range tc.scaledDownGroups {
+				scaleDownRequests = append(scaleDownRequests, &ScaleDownRequest{
+					NodeGroup: provider.GetNodeGroup(nodeGroupName),
+				})
+			}
+
+			clusterState := &ClusterStateRegistry{
+				cloudProvider:         provider,
+				perNodeGroupReadiness: tc.readiness,
+				scaleUpRequests:       tc.scaleUpRequests,
+				scaleDownRequests:     scaleDownRequests,
+			}
+
+			clusterState.updateAcceptableRanges(tc.targetSizes)
+			assert.Equal(t, tc.wantAcceptableRanges, clusterState.acceptableRanges)
+		})
+	}
+}
+
+func TestUpdateIncorrectNodeGroupSizes(t *testing.T) {
+	timeNow := time.Now()
+	testCases := []struct {
+		name string
+
+		acceptableRanges map[string]AcceptableRange
+		readiness        map[string]Readiness
+		incorrectSizes   map[string]IncorrectNodeGroupSize
+
+		wantIncorrectSizes map[string]IncorrectNodeGroupSize
+	}{
+		{
+			name: "node groups with correct sizes",
+			acceptableRanges: map[string]AcceptableRange{
+				"ng1": {CurrentTarget: 10},
+				"ng2": {CurrentTarget: 20},
+			},
+			readiness: map[string]Readiness{
+				"ng1": {Registered: make([]string, 10)},
+				"ng2": {Registered: make([]string, 20)},
+			},
+			incorrectSizes:     map[string]IncorrectNodeGroupSize{},
+			wantIncorrectSizes: map[string]IncorrectNodeGroupSize{},
+		},
+		{
+			name: "node groups with correct sizes after not being correct sized",
+			acceptableRanges: map[string]AcceptableRange{
+				"ng1": {CurrentTarget: 10},
+				"ng2": {CurrentTarget: 20},
+			},
+			readiness: map[string]Readiness{
+				"ng1": {Registered: make([]string, 10)},
+				"ng2": {Registered: make([]string, 20)},
+			},
+			incorrectSizes: map[string]IncorrectNodeGroupSize{
+				"ng1": {CurrentSize: 8, ExpectedSize: 10, FirstObserved: timeNow.Add(-time.Hour)},
+				"ng2": {CurrentSize: 15, ExpectedSize: 20, FirstObserved: timeNow.Add(-time.Minute)},
+			},
+			wantIncorrectSizes: map[string]IncorrectNodeGroupSize{},
+		},
+		{
+			name: "node groups below the target size",
+			acceptableRanges: map[string]AcceptableRange{
+				"ng1": {CurrentTarget: 10},
+				"ng2": {CurrentTarget: 20},
+			},
+			readiness: map[string]Readiness{
+				"ng1": {Registered: make([]string, 8)},
+				"ng2": {Registered: make([]string, 15)},
+			},
+			incorrectSizes: map[string]IncorrectNodeGroupSize{},
+			wantIncorrectSizes: map[string]IncorrectNodeGroupSize{
+				"ng1": {CurrentSize: 8, ExpectedSize: 10, FirstObserved: timeNow},
+				"ng2": {CurrentSize: 15, ExpectedSize: 20, FirstObserved: timeNow},
+			},
+		},
+		{
+			name: "node groups above the target size",
+			acceptableRanges: map[string]AcceptableRange{
+				"ng1": {CurrentTarget: 10},
+				"ng2": {CurrentTarget: 20},
+			},
+			readiness: map[string]Readiness{
+				"ng1": {Registered: make([]string, 12)},
+				"ng2": {Registered: make([]string, 25)},
+			},
+			incorrectSizes: map[string]IncorrectNodeGroupSize{},
+			wantIncorrectSizes: map[string]IncorrectNodeGroupSize{
+				"ng1": {CurrentSize: 12, ExpectedSize: 10, FirstObserved: timeNow},
+				"ng2": {CurrentSize: 25, ExpectedSize: 20, FirstObserved: timeNow},
+			},
+		},
+		{
+			name: "node groups below the target size with changed delta",
+			acceptableRanges: map[string]AcceptableRange{
+				"ng1": {CurrentTarget: 10},
+				"ng2": {CurrentTarget: 20},
+			},
+			readiness: map[string]Readiness{
+				"ng1": {Registered: make([]string, 8)},
+				"ng2": {Registered: make([]string, 15)},
+			},
+			incorrectSizes: map[string]IncorrectNodeGroupSize{
+				"ng1": {CurrentSize: 7, ExpectedSize: 10, FirstObserved: timeNow.Add(-time.Hour)},
+				"ng2": {CurrentSize: 14, ExpectedSize: 20, FirstObserved: timeNow.Add(-time.Minute)},
+			},
+			wantIncorrectSizes: map[string]IncorrectNodeGroupSize{
+				"ng1": {CurrentSize: 8, ExpectedSize: 10, FirstObserved: timeNow},
+				"ng2": {CurrentSize: 15, ExpectedSize: 20, FirstObserved: timeNow},
+			},
+		},
+		{
+			name: "node groups below the target size with the same delta",
+			acceptableRanges: map[string]AcceptableRange{
+				"ng1": {CurrentTarget: 10},
+				"ng2": {CurrentTarget: 20},
+			},
+			readiness: map[string]Readiness{
+				"ng1": {Registered: make([]string, 8)},
+				"ng2": {Registered: make([]string, 15)},
+			},
+			incorrectSizes: map[string]IncorrectNodeGroupSize{
+				"ng1": {CurrentSize: 8, ExpectedSize: 10, FirstObserved: timeNow.Add(-time.Hour)},
+				"ng2": {CurrentSize: 15, ExpectedSize: 20, FirstObserved: timeNow.Add(-time.Minute)},
+			},
+			wantIncorrectSizes: map[string]IncorrectNodeGroupSize{
+				"ng1": {CurrentSize: 8, ExpectedSize: 10, FirstObserved: timeNow.Add(-time.Hour)},
+				"ng2": {CurrentSize: 15, ExpectedSize: 20, FirstObserved: timeNow.Add(-time.Minute)},
+			},
+		},
+		{
+			name: "node groups below the target size with short unregistered nodes",
+			acceptableRanges: map[string]AcceptableRange{
+				"ng1": {CurrentTarget: 10},
+				"ng2": {CurrentTarget: 20},
+			},
+			readiness: map[string]Readiness{
+				"ng1": {Registered: make([]string, 8), Unregistered: make([]string, 2)},
+				"ng2": {Registered: make([]string, 15), Unregistered: make([]string, 3)},
+			},
+			incorrectSizes: map[string]IncorrectNodeGroupSize{},
+			wantIncorrectSizes: map[string]IncorrectNodeGroupSize{
+				"ng2": {CurrentSize: 15, ExpectedSize: 20, FirstObserved: timeNow},
+			},
+		},
+		{
+			name: "node groups below the target size with long unregistered nodes",
+			acceptableRanges: map[string]AcceptableRange{
+				"ng1": {CurrentTarget: 10},
+				"ng2": {CurrentTarget: 20},
+			},
+			readiness: map[string]Readiness{
+				"ng1": {Registered: make([]string, 8), LongUnregistered: make([]string, 2)},
+				"ng2": {Registered: make([]string, 15), LongUnregistered: make([]string, 3)},
+			},
+			incorrectSizes: map[string]IncorrectNodeGroupSize{},
+			wantIncorrectSizes: map[string]IncorrectNodeGroupSize{
+				"ng2": {CurrentSize: 15, ExpectedSize: 20, FirstObserved: timeNow},
+			},
+		},
+		{
+			name: "node groups below the target size with various unregistered nodes",
+			acceptableRanges: map[string]AcceptableRange{
+				"ng1": {CurrentTarget: 10},
+				"ng2": {CurrentTarget: 20},
+			},
+			readiness: map[string]Readiness{
+				"ng1": {Registered: make([]string, 8), Unregistered: make([]string, 1), LongUnregistered: make([]string, 1)},
+				"ng2": {Registered: make([]string, 15), Unregistered: make([]string, 2), LongUnregistered: make([]string, 2)},
+			},
+			incorrectSizes: map[string]IncorrectNodeGroupSize{},
+			wantIncorrectSizes: map[string]IncorrectNodeGroupSize{
+				"ng2": {CurrentSize: 15, ExpectedSize: 20, FirstObserved: timeNow},
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			provider := testprovider.NewTestCloudProvider(nil, nil)
+			for nodeGroupName, acceptableRange := range tc.acceptableRanges {
+				provider.AddNodeGroup(nodeGroupName, 0, 1000, acceptableRange.CurrentTarget)
+			}
+
+			clusterState := &ClusterStateRegistry{
+				cloudProvider:           provider,
+				acceptableRanges:        tc.acceptableRanges,
+				perNodeGroupReadiness:   tc.readiness,
+				incorrectNodeGroupSizes: tc.incorrectSizes,
+			}
+
+			clusterState.updateIncorrectNodeGroupSizes(timeNow)
+			assert.Equal(t, tc.wantIncorrectSizes, clusterState.incorrectNodeGroupSizes)
+		})
+	}
+}
+
+func TestTruncateIfExceedMaxSize(t *testing.T) {
+	testCases := []struct {
+		name        string
+		message     string
+		maxSize     int
+		wantMessage string
+	}{
+		{
+			name:        "Message doesn't exceed maxSize",
+			message:     "Some message",
+			maxSize:     len("Some message"),
+			wantMessage: "Some message",
+		},
+		{
+			name:        "Message exceeds maxSize",
+			message:     "Some long message",
+			maxSize:     len("Some long message") - 1,
+			wantMessage: "Some <truncated>",
+		},
+		{
+			name:        "Message doesn't exceed maxSize and maxSize is smaller than truncatedMessageSuffix length",
+			message:     "msg",
+			maxSize:     len("msg"),
+			wantMessage: "msg",
+		},
+		{
+			name:        "Message exceeds maxSize and maxSize is smaller than truncatedMessageSuffix length",
+			message:     "msg",
+			maxSize:     2,
+			wantMessage: "ms",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := truncateIfExceedMaxLength(tc.message, tc.maxSize)
+			assert.Equal(t, tc.wantMessage, got)
+		})
+	}
 }

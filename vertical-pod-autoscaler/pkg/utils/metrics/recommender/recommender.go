@@ -19,6 +19,7 @@ package recommender
 
 import (
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -32,7 +33,14 @@ const (
 )
 
 var (
-	modes = []string{string(vpa_types.UpdateModeOff), string(vpa_types.UpdateModeInitial), string(vpa_types.UpdateModeRecreate), string(vpa_types.UpdateModeAuto)}
+	// TODO: unify this list with the types defined in the VPA handler to avoid
+	// drift if one file is changed and the other one is missed.
+	modes = []string{
+		string(vpa_types.UpdateModeOff),
+		string(vpa_types.UpdateModeInitial),
+		string(vpa_types.UpdateModeRecreate),
+		string(vpa_types.UpdateModeAuto),
+	}
 )
 
 type apiVersion string
@@ -71,6 +79,14 @@ var (
 			Help:      "Number of aggregate container states being tracked by the recommender",
 		},
 	)
+
+	metricServerResponses = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: metricsNamespace,
+			Name:      "metric_server_responses",
+			Help:      "Count of responses to queries to metrics server",
+		}, []string{"is_error", "client_name"},
+	)
 )
 
 type objectCounterKey struct {
@@ -88,7 +104,7 @@ type ObjectCounter struct {
 
 // Register initializes all metrics for VPA Recommender
 func Register() {
-	prometheus.MustRegister(vpaObjectCount, recommendationLatency, functionLatency, aggregateContainerStatesCount)
+	prometheus.MustRegister(vpaObjectCount, recommendationLatency, functionLatency, aggregateContainerStatesCount, metricServerResponses)
 }
 
 // NewExecutionTimer provides a timer for Recommender's RunOnce execution
@@ -98,12 +114,17 @@ func NewExecutionTimer() *metrics.ExecutionTimer {
 
 // ObserveRecommendationLatency observes the time it took for the first recommendation to appear
 func ObserveRecommendationLatency(created time.Time) {
-	recommendationLatency.Observe(time.Now().Sub(created).Seconds())
+	recommendationLatency.Observe(time.Since(created).Seconds())
 }
 
 // RecordAggregateContainerStatesCount records the number of containers being tracked by the recommender
 func RecordAggregateContainerStatesCount(statesCount int) {
 	aggregateContainerStatesCount.Set(float64(statesCount))
+}
+
+// RecordMetricsServerResponse records result of a query to metrics server
+func RecordMetricsServerResponse(err error, clientName string) {
+	metricServerResponses.WithLabelValues(strconv.FormatBool(err != nil), clientName).Inc()
 }
 
 // NewObjectCounter creates a new helper to split VPA objects into buckets
@@ -136,20 +157,15 @@ func NewObjectCounter() *ObjectCounter {
 
 // Add updates the helper state to include the given VPA object
 func (oc *ObjectCounter) Add(vpa *model.Vpa) {
-	mode := string(vpa_types.UpdateModeAuto)
+	mode := vpa_types.UpdateModeAuto
 	if vpa.UpdateMode != nil && string(*vpa.UpdateMode) != "" {
-		mode = string(*vpa.UpdateMode)
-	}
-	// TODO: Maybe report v1 version as well.
-	api := v1beta2
-	if vpa.IsV1Beta1API {
-		api = v1beta1
+		mode = *vpa.UpdateMode
 	}
 
 	key := objectCounterKey{
-		mode:              mode,
+		mode:              string(mode),
 		has:               vpa.HasRecommendation(),
-		apiVersion:        api,
+		apiVersion:        apiVersion(vpa.APIVersion),
 		matchesPods:       vpa.HasMatchedPods(),
 		unsupportedConfig: vpa.Conditions.ConditionActive(vpa_types.ConfigUnsupported),
 	}

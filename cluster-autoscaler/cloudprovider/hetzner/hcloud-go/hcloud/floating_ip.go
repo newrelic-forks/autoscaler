@@ -1,19 +1,3 @@
-/*
-Copyright 2018 The Kubernetes Authors.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
-
 package hcloud
 
 import (
@@ -32,7 +16,7 @@ import (
 
 // FloatingIP represents a Floating IP in the Hetzner Cloud.
 type FloatingIP struct {
-	ID           int
+	ID           int64
 	Description  string
 	Created      time.Time
 	IP           net.IP
@@ -48,6 +32,7 @@ type FloatingIP struct {
 }
 
 // DNSPtrForIP returns the reverse DNS pointer of the IP address.
+// Deprecated: Use GetDNSPtrForIP instead.
 func (f *FloatingIP) DNSPtrForIP(ip net.IP) string {
 	return f.DNSPtr[ip.String()]
 }
@@ -57,7 +42,7 @@ type FloatingIPProtection struct {
 	Delete bool
 }
 
-// FloatingIPType represents the type of a Floating IP.
+// FloatingIPType represents the type of Floating IP.
 type FloatingIPType string
 
 // Floating IP types.
@@ -66,14 +51,52 @@ const (
 	FloatingIPTypeIPv6 FloatingIPType = "ipv6"
 )
 
+// changeDNSPtr changes or resets the reverse DNS pointer for an IP address.
+// Pass a nil ptr to reset the reverse DNS pointer to its default value.
+func (f *FloatingIP) changeDNSPtr(ctx context.Context, client *Client, ip net.IP, ptr *string) (*Action, *Response, error) {
+	reqBody := schema.FloatingIPActionChangeDNSPtrRequest{
+		IP:     ip.String(),
+		DNSPtr: ptr,
+	}
+	reqBodyData, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	path := fmt.Sprintf("/floating_ips/%d/actions/change_dns_ptr", f.ID)
+	req, err := client.NewRequest(ctx, "POST", path, bytes.NewReader(reqBodyData))
+	if err != nil {
+		return nil, nil, err
+	}
+
+	respBody := schema.FloatingIPActionChangeDNSPtrResponse{}
+	resp, err := client.Do(req, &respBody)
+	if err != nil {
+		return nil, resp, err
+	}
+	return ActionFromSchema(respBody.Action), resp, nil
+}
+
+// GetDNSPtrForIP searches for the dns assigned to the given IP address.
+// It returns an error if there is no dns set for the given IP address.
+func (f *FloatingIP) GetDNSPtrForIP(ip net.IP) (string, error) {
+	dns, ok := f.DNSPtr[ip.String()]
+	if !ok {
+		return "", DNSNotFoundError{ip}
+	}
+
+	return dns, nil
+}
+
 // FloatingIPClient is a client for the Floating IP API.
 type FloatingIPClient struct {
 	client *Client
+	Action *ResourceActionClient
 }
 
 // GetByID retrieves a Floating IP by its ID. If the Floating IP does not exist,
 // nil is returned.
-func (c *FloatingIPClient) GetByID(ctx context.Context, id int) (*FloatingIP, *Response, error) {
+func (c *FloatingIPClient) GetByID(ctx context.Context, id int64) (*FloatingIP, *Response, error) {
 	req, err := c.client.NewRequest(ctx, "GET", fmt.Sprintf("/floating_ips/%d", id), nil)
 	if err != nil {
 		return nil, nil, err
@@ -105,8 +128,8 @@ func (c *FloatingIPClient) GetByName(ctx context.Context, name string) (*Floatin
 // Get retrieves a Floating IP by its ID if the input can be parsed as an integer, otherwise it
 // retrieves a Floating IP by its name. If the Floating IP does not exist, nil is returned.
 func (c *FloatingIPClient) Get(ctx context.Context, idOrName string) (*FloatingIP, *Response, error) {
-	if id, err := strconv.Atoi(idOrName); err == nil {
-		return c.GetByID(ctx, int(id))
+	if id, err := strconv.ParseInt(idOrName, 10, 64); err == nil {
+		return c.GetByID(ctx, id)
 	}
 	return c.GetByName(ctx, idOrName)
 }
@@ -115,12 +138,16 @@ func (c *FloatingIPClient) Get(ctx context.Context, idOrName string) (*FloatingI
 type FloatingIPListOpts struct {
 	ListOpts
 	Name string
+	Sort []string
 }
 
 func (l FloatingIPListOpts) values() url.Values {
-	vals := l.ListOpts.values()
+	vals := l.ListOpts.Values()
 	if l.Name != "" {
 		vals.Add("name", l.Name)
+	}
+	for _, sort := range l.Sort {
+		vals.Add("sort", sort)
 	}
 	return vals
 }
@@ -157,7 +184,7 @@ func (c *FloatingIPClient) All(ctx context.Context) ([]*FloatingIP, error) {
 func (c *FloatingIPClient) AllWithOpts(ctx context.Context, opts FloatingIPListOpts) ([]*FloatingIP, error) {
 	allFloatingIPs := []*FloatingIP{}
 
-	_, err := c.client.all(func(page int) (*Response, error) {
+	err := c.client.all(func(page int) (*Response, error) {
 		opts.Page = page
 		floatingIPs, resp, err := c.List(ctx, opts)
 		if err != nil {
@@ -215,10 +242,10 @@ func (c *FloatingIPClient) Create(ctx context.Context, opts FloatingIPCreateOpts
 		Name:        opts.Name,
 	}
 	if opts.HomeLocation != nil {
-		reqBody.HomeLocation = String(opts.HomeLocation.Name)
+		reqBody.HomeLocation = Ptr(opts.HomeLocation.Name)
 	}
 	if opts.Server != nil {
-		reqBody.Server = Int(opts.Server.ID)
+		reqBody.Server = Ptr(opts.Server.ID)
 	}
 	if opts.Labels != nil {
 		reqBody.Labels = &opts.Labels
@@ -341,27 +368,11 @@ func (c *FloatingIPClient) Unassign(ctx context.Context, floatingIP *FloatingIP)
 // ChangeDNSPtr changes or resets the reverse DNS pointer for a Floating IP address.
 // Pass a nil ptr to reset the reverse DNS pointer to its default value.
 func (c *FloatingIPClient) ChangeDNSPtr(ctx context.Context, floatingIP *FloatingIP, ip string, ptr *string) (*Action, *Response, error) {
-	reqBody := schema.FloatingIPActionChangeDNSPtrRequest{
-		IP:     ip,
-		DNSPtr: ptr,
+	netIP := net.ParseIP(ip)
+	if netIP == nil {
+		return nil, nil, InvalidIPError{ip}
 	}
-	reqBodyData, err := json.Marshal(reqBody)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	path := fmt.Sprintf("/floating_ips/%d/actions/change_dns_ptr", floatingIP.ID)
-	req, err := c.client.NewRequest(ctx, "POST", path, bytes.NewReader(reqBodyData))
-	if err != nil {
-		return nil, nil, err
-	}
-
-	respBody := schema.FloatingIPActionChangeDNSPtrResponse{}
-	resp, err := c.client.Do(req, &respBody)
-	if err != nil {
-		return nil, resp, err
-	}
-	return ActionFromSchema(respBody.Action), resp, nil
+	return floatingIP.changeDNSPtr(ctx, c.client, net.ParseIP(ip), ptr)
 }
 
 // FloatingIPChangeProtectionOpts specifies options for changing the resource protection level of a Floating IP.

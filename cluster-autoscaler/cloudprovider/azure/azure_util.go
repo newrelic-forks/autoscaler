@@ -31,7 +31,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2019-12-01/compute"
+	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2022-08-01/compute"
 	azStorage "github.com/Azure/azure-sdk-for-go/storage"
 	"github.com/Azure/go-autorest/autorest"
 	"github.com/Azure/go-autorest/autorest/to"
@@ -40,7 +40,7 @@ import (
 
 	"k8s.io/autoscaler/cluster-autoscaler/version"
 	klog "k8s.io/klog/v2"
-	"k8s.io/legacy-cloud-providers/azure/retry"
+	"sigs.k8s.io/cloud-provider-azure/pkg/retry"
 )
 
 const (
@@ -81,6 +81,17 @@ const (
 	nodeLabelTagName     = "k8s.io_cluster-autoscaler_node-template_label_"
 	nodeTaintTagName     = "k8s.io_cluster-autoscaler_node-template_taint_"
 	nodeResourcesTagName = "k8s.io_cluster-autoscaler_node-template_resources_"
+	nodeOptionsTagName   = "k8s.io_cluster-autoscaler_node-template_autoscaling-options_"
+
+	// PowerStates reflect the operational state of a VM
+	// From https://learn.microsoft.com/en-us/java/api/com.microsoft.azure.management.compute.powerstate?view=azure-java-stable
+	vmPowerStateStarting     = "PowerState/starting"
+	vmPowerStateRunning      = "PowerState/running"
+	vmPowerStateStopping     = "PowerState/stopping"
+	vmPowerStateStopped      = "PowerState/stopped"
+	vmPowerStateDeallocating = "PowerState/deallocating"
+	vmPowerStateDeallocated  = "PowerState/deallocated"
+	vmPowerStateUnknown      = "PowerState/unknown"
 )
 
 var (
@@ -90,9 +101,9 @@ var (
 	azureResourceGroupNameRE = regexp.MustCompile(`.*/subscriptions/(?:.*)/resourceGroups/(.+)/providers/(?:.*)`)
 )
 
-//AzUtil consists of utility functions which utilizes clients to different services.
-//Since they span across various clients they cannot be fitted into individual client structs
-//so adding them here.
+// AzUtil consists of utility functions which utilizes clients to different services.
+// Since they span across various clients they cannot be fitted into individual client structs
+// so adding them here.
 type AzUtil struct {
 	manager *AzureManager
 }
@@ -102,7 +113,7 @@ func (util *AzUtil) DeleteBlob(accountName, vhdContainer, vhdBlob string) error 
 	ctx, cancel := getContextWithCancel()
 	defer cancel()
 
-	storageKeysResult, rerr := util.manager.azClient.storageAccountsClient.ListKeys(ctx, util.manager.config.ResourceGroup, accountName)
+	storageKeysResult, rerr := util.manager.azClient.storageAccountsClient.ListKeys(ctx, util.manager.config.SubscriptionID, util.manager.config.ResourceGroup, accountName)
 	if rerr != nil {
 		return rerr.Error()
 	}
@@ -205,7 +216,7 @@ func (util *AzUtil) DeleteVirtualMachine(rg string, name string) error {
 			klog.Infof("deleting managed disk: %s/%s", rg, *osDiskName)
 			disksCtx, disksCancel := getContextWithCancel()
 			defer disksCancel()
-			diskErr := util.manager.azClient.disksClient.Delete(disksCtx, rg, *osDiskName)
+			diskErr := util.manager.azClient.disksClient.Delete(disksCtx, util.manager.config.SubscriptionID, rg, *osDiskName)
 			_, realErr := checkResourceExistsFromRetryError(diskErr)
 			if realErr != nil {
 				return realErr
@@ -481,12 +492,12 @@ func windowsVMNameParts(vmName string) (poolPrefix string, orch string, poolInde
 func GetVMNameIndex(osType compute.OperatingSystemTypes, vmName string) (int, error) {
 	var agentIndex int
 	var err error
-	if osType == compute.Linux {
+	if osType == compute.OperatingSystemTypesLinux {
 		_, _, agentIndex, err = k8sLinuxVMNameParts(vmName)
 		if err != nil {
 			return 0, err
 		}
-	} else if osType == compute.Windows {
+	} else if osType == compute.OperatingSystemTypesWindows {
 		_, _, _, agentIndex, err = windowsVMNameParts(vmName)
 		if err != nil {
 			return 0, err
@@ -606,4 +617,33 @@ func isAzureRequestsThrottled(rerr *retry.Error) bool {
 	}
 
 	return rerr.HTTPStatusCode == http.StatusTooManyRequests
+}
+
+func isRunningVmPowerState(powerState string) bool {
+	return powerState == vmPowerStateRunning || powerState == vmPowerStateStarting
+}
+
+func isKnownVmPowerState(powerState string) bool {
+	knownPowerStates := map[string]bool{
+		vmPowerStateStarting:     true,
+		vmPowerStateRunning:      true,
+		vmPowerStateStopping:     true,
+		vmPowerStateStopped:      true,
+		vmPowerStateDeallocating: true,
+		vmPowerStateDeallocated:  true,
+		vmPowerStateUnknown:      true,
+	}
+	return knownPowerStates[powerState]
+}
+
+func vmPowerStateFromStatuses(statuses []compute.InstanceViewStatus) string {
+	for _, status := range statuses {
+		if status.Code == nil || !isKnownVmPowerState(*status.Code) {
+			continue
+		}
+		return *status.Code
+	}
+
+	// PowerState is not set if the VM is still creating (or has failed creation)
+	return vmPowerStateUnknown
 }

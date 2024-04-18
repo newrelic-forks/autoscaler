@@ -33,6 +33,7 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 	"k8s.io/autoscaler/cluster-autoscaler/config"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/errors"
+	"k8s.io/autoscaler/cluster-autoscaler/utils/gpu"
 )
 
 const (
@@ -81,6 +82,11 @@ func (p *provider) NodeGroupForNode(node *corev1.Node) (cloudprovider.NodeGroup,
 	return ng, nil
 }
 
+// HasInstance returns whether a given node has a corresponding instance in this cloud provider
+func (p *provider) HasInstance(node *corev1.Node) (bool, error) {
+	return true, cloudprovider.ErrNotImplemented
+}
+
 func (*provider) Pricing() (cloudprovider.PricingModel, errors.AutoscalerError) {
 	return nil, cloudprovider.ErrNotImplemented
 }
@@ -123,6 +129,12 @@ func (p *provider) GPULabel() string {
 	return GPULabel
 }
 
+// GetNodeGpuConfig returns the label, type and resource name for the GPU added to node. If node doesn't have
+// any GPUs, it returns nil.
+func (p *provider) GetNodeGpuConfig(node *corev1.Node) *cloudprovider.GpuConfig {
+	return gpu.GetNodeGPUFromCloudProvider(p, node)
+}
+
 func newProvider(
 	name string,
 	rl *cloudprovider.ResourceLimiter,
@@ -139,20 +151,24 @@ func newProvider(
 func BuildClusterAPI(opts config.AutoscalingOptions, do cloudprovider.NodeGroupDiscoveryOptions, rl *cloudprovider.ResourceLimiter) cloudprovider.CloudProvider {
 	managementKubeconfig := opts.CloudConfig
 	if managementKubeconfig == "" && !opts.ClusterAPICloudConfigAuthoritative {
-		managementKubeconfig = opts.KubeConfigPath
+		managementKubeconfig = opts.KubeClientOpts.KubeConfigPath
 	}
 
 	managementConfig, err := clientcmd.BuildConfigFromFlags("", managementKubeconfig)
 	if err != nil {
 		klog.Fatalf("cannot build management cluster config: %v", err)
 	}
+	managementConfig.QPS = opts.KubeClientOpts.KubeClientQPS
+	managementConfig.Burst = opts.KubeClientOpts.KubeClientBurst
 
-	workloadKubeconfig := opts.KubeConfigPath
+	workloadKubeconfig := opts.KubeClientOpts.KubeConfigPath
 
 	workloadConfig, err := clientcmd.BuildConfigFromFlags("", workloadKubeconfig)
 	if err != nil {
 		klog.Fatalf("cannot build workload cluster config: %v", err)
 	}
+	workloadConfig.QPS = opts.KubeClientOpts.KubeClientQPS
+	workloadConfig.Burst = opts.KubeClientOpts.KubeClientBurst
 
 	// Grab a dynamic interface that we can create informers from
 	managementClient, err := dynamic.NewForConfig(managementConfig)
@@ -180,16 +196,16 @@ func BuildClusterAPI(opts config.AutoscalingOptions, do cloudprovider.NodeGroupD
 		klog.Fatalf("create scale client failed: %v", err)
 	}
 
-	controller, err := newMachineController(managementClient, workloadClient, managementDiscoveryClient, managementScaleClient, do)
-	if err != nil {
-		klog.Fatal(err)
-	}
-
 	// Ideally this would be passed in but the builder is not
 	// currently organised to do so.
 	stopCh := make(chan struct{})
 
-	if err := controller.run(stopCh); err != nil {
+	controller, err := newMachineController(managementClient, workloadClient, managementDiscoveryClient, managementScaleClient, do, stopCh)
+	if err != nil {
+		klog.Fatal(err)
+	}
+
+	if err := controller.run(); err != nil {
 		klog.Fatal(err)
 	}
 

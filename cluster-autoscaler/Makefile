@@ -1,13 +1,13 @@
-ALL_ARCH = amd64 arm64
+ALL_ARCH = amd64 arm64 s390x
 all: $(addprefix build-arch-,$(ALL_ARCH))
 
-TAG?=dev
+TAG?=v1.25.3_NR
 FLAGS=
 LDFLAGS?=-s
 ENVVAR=CGO_ENABLED=0
 GOOS?=linux
 GOARCH?=$(shell go env GOARCH)
-REGISTRY?=staging-k8s.gcr.io
+REGISTRY?=cf-registry.nr-ops.net/container-fabric
 DOCKER_NETWORK?=default
 ifdef BUILD_TAGS
   TAGS_FLAG=--tags ${BUILD_TAGS}
@@ -28,11 +28,18 @@ ifdef DOCKER_RM
 else
   RM_FLAG=
 endif
+ifndef AWS_REGION
+  AWS_REGION=$(shell aws configure get region)
+endif
+
 IMAGE=$(REGISTRY)/cluster-autoscaler$(PROVIDER)
 
 export DOCKER_CLI_EXPERIMENTAL := enabled
 
-build: build-arch-$(GOARCH)
+build:
+	@echo "⚠️  WARNING: The vendor directory will be removed soon. \
+	Please make sure your dependencies are managed via Go modules."
+	@$(MAKE) build-arch-$(GOARCH)
 
 build-arch-%: clean-arch-%
 	$(ENVVAR) GOOS=$(GOOS) GOARCH=$* go build -o cluster-autoscaler-$* ${LDFLAGS_FLAG} ${TAGS_FLAG}
@@ -78,7 +85,7 @@ clean-arch-%:
 	rm -f cluster-autoscaler-$*
 
 generate:
-	go generate ./cloudprovider/aws
+	AWS_REGION=$(AWS_REGION) go generate ./cloudprovider/aws
 
 format:
 	test -z "$$(find . -path ./vendor -prune -type f -o -name '*.go' -exec gofmt -s -d {} + | tee /dev/stderr)" || \
@@ -105,3 +112,23 @@ test-in-docker: clean docker-builder
 	docker run ${RM_FLAG} -v `pwd`:/cluster-autoscaler/:Z autoscaling-builder:latest bash -c 'cd /cluster-autoscaler && go test -race ./... ${TAGS_FLAG}'
 
 .PHONY: all build test-unit clean format execute-release dev-release docker-builder build-in-docker release generate push-image push-manifest
+
+## Location to install dependencies to
+LOCALBIN ?= $(shell pwd)/bin
+$(LOCALBIN):
+	mkdir -p $(LOCALBIN)
+
+## Tool Binaries
+CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
+
+## Tool Versions
+CONTROLLER_TOOLS_VERSION ?= v0.14.0
+
+.PHONY: controller-gen
+controller-gen: $(CONTROLLER_GEN) ## Download controller-gen locally if necessary.
+$(CONTROLLER_GEN): $(LOCALBIN)
+	test -s $(LOCALBIN)/controller-gen || GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_TOOLS_VERSION)
+
+.PHONY: manifest
+manifest: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
+	$(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook paths="./apis/..." output:crd:artifacts:config=apis/config/crd

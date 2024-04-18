@@ -19,39 +19,57 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"fmt"
+	"strings"
 	"time"
 
 	admissionregistration "k8s.io/api/admissionregistration/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 const (
 	webhookConfigName = "vpa-webhook-config"
 )
 
-// get a clientset with in-cluster config.
-func getClient() *kubernetes.Clientset {
-	config, err := rest.InClusterConfig()
-	if err != nil {
-		klog.Fatal(err)
-	}
-	clientset, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		klog.Fatal(err)
-	}
-	return clientset
-}
-
-func configTLS(clientset *kubernetes.Clientset, serverCert, serverKey []byte) *tls.Config {
+func configTLS(serverCert, serverKey []byte, minTlsVersion, ciphers string) *tls.Config {
+	var tlsVersion uint16
+	var ciphersuites []uint16
+	reverseCipherMap := make(map[string]uint16)
 	sCert, err := tls.X509KeyPair(serverCert, serverKey)
 	if err != nil {
 		klog.Fatal(err)
 	}
+
+	for _, c := range tls.CipherSuites() {
+		reverseCipherMap[c.Name] = c.ID
+	}
+	for _, c := range strings.Split(strings.ReplaceAll(ciphers, ",", ":"), ":") {
+		cipher, ok := reverseCipherMap[c]
+		if ok {
+			ciphersuites = append(ciphersuites, cipher)
+		}
+	}
+	if len(ciphersuites) == 0 {
+		ciphersuites = nil
+	}
+
+	switch minTlsVersion {
+	case "":
+		fallthrough
+	case "tls1_2":
+		tlsVersion = tls.VersionTLS12
+	case "tls1_3":
+		tlsVersion = tls.VersionTLS13
+	default:
+		klog.Fatal(fmt.Errorf("Unable to determine value for --min-tls-version (%s), must be either tls1_2 or tls1_3", minTlsVersion))
+	}
+
 	return &tls.Config{
+		MinVersion:   tlsVersion,
 		Certificates: []tls.Certificate{sCert},
+		CipherSuites: ciphersuites,
 	}
 }
 
@@ -85,7 +103,7 @@ func selfRegistration(clientset *kubernetes.Clientset, caCert []byte, namespace,
 		Webhooks: []admissionregistration.MutatingWebhook{
 			{
 				Name:                    "vpa.k8s.io",
-				AdmissionReviewVersions: []string{"v1beta1"},
+				AdmissionReviewVersions: []string{"v1"},
 				Rules: []admissionregistration.RuleWithOperations{
 					{
 						Operations: []admissionregistration.OperationType{admissionregistration.Create},

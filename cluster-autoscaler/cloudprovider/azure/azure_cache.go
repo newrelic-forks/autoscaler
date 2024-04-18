@@ -17,13 +17,16 @@ limitations under the License.
 package azure
 
 import (
+	"context"
+	"reflect"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2019-12-01/compute"
+	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2022-08-01/compute"
 	"github.com/Azure/go-autorest/autorest/to"
+	"github.com/Azure/skewer"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 
 	"k8s.io/klog/v2"
@@ -36,7 +39,7 @@ var (
 // azureCache is used for caching cluster resources state.
 //
 // It is needed to:
-// - keep track of node groups (AKS, VM and VMSS types) in the cluster,
+// - keep track of node groups (VM and VMSS types) in the cluster,
 // - keep track of instances and which node group they belong to,
 // - limit repetitive Azure API calls.
 type azureCache struct {
@@ -53,9 +56,11 @@ type azureCache struct {
 	registeredNodeGroups []cloudprovider.NodeGroup
 	instanceToNodeGroup  map[azureRef]cloudprovider.NodeGroup
 	unownedInstances     map[azureRef]bool
+	autoscalingOptions   map[azureRef]map[string]string
+	skus                 map[string]*skewer.Cache
 }
 
-func newAzureCache(client *azClient, cacheTTL time.Duration, resourceGroup, vmType string) (*azureCache, error) {
+func newAzureCache(client *azClient, cacheTTL time.Duration, resourceGroup, vmType string, enableDynamicInstanceList bool, defaultLocation string) (*azureCache, error) {
 	cache := &azureCache{
 		interrupt:            make(chan struct{}),
 		azClient:             client,
@@ -67,6 +72,12 @@ func newAzureCache(client *azClient, cacheTTL time.Duration, resourceGroup, vmTy
 		registeredNodeGroups: make([]cloudprovider.NodeGroup, 0),
 		instanceToNodeGroup:  make(map[azureRef]cloudprovider.NodeGroup),
 		unownedInstances:     make(map[azureRef]bool),
+		autoscalingOptions:   make(map[azureRef]map[string]string),
+		skus:                 make(map[string]*skewer.Cache),
+	}
+
+	if enableDynamicInstanceList {
+		cache.skus[defaultLocation] = &skewer.Cache{}
 	}
 
 	if err := cache.regenerate(); err != nil {
@@ -117,10 +128,32 @@ func (m *azureCache) regenerate() error {
 		}
 	}
 
+	// Regenerate VMSS to autoscaling options mapping.
+	newAutoscalingOptions := make(map[azureRef]map[string]string)
+	for _, vmss := range m.scaleSets {
+		ref := azureRef{Name: *vmss.Name}
+		options := extractAutoscalingOptionsFromScaleSetTags(vmss.Tags)
+		if !reflect.DeepEqual(m.getAutoscalingOptions(ref), options) {
+			klog.V(4).Infof("Extracted autoscaling options from %q ScaleSet tags: %v", *vmss.Name, options)
+		}
+		newAutoscalingOptions[ref] = options
+	}
+
+	newSkuCache := make(map[string]*skewer.Cache)
+	for location := range m.skus {
+		cache, err := m.fetchSKUs(context.Background(), location)
+		if err != nil {
+			return err
+		}
+		newSkuCache[location] = cache
+	}
+
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
 	m.instanceToNodeGroup = newInstanceToNodeGroupCache
+	m.autoscalingOptions = newAutoscalingOptions
+	m.skus = newSkuCache
 
 	// Reset unowned instances cache.
 	m.unownedInstances = make(map[azureRef]bool)
@@ -141,7 +174,7 @@ func (m *azureCache) fetchAzureResources() error {
 		} else {
 			return err
 		}
-	case vmTypeStandard, vmTypeAKS:
+	case vmTypeStandard:
 		// List all VMs in the RG.
 		vmResult, err := m.fetchVirtualMachines()
 		if err == nil {
@@ -249,11 +282,43 @@ func (m *azureCache) Unregister(nodeGroup cloudprovider.NodeGroup) bool {
 	return changed
 }
 
+func (m *azureCache) fetchSKUs(ctx context.Context, location string) (*skewer.Cache, error) {
+	return skewer.NewCache(ctx,
+		skewer.WithLocation(location),
+		skewer.WithResourceClient(m.azClient.skuClient),
+	)
+}
+
+func (m *azureCache) GetSKU(ctx context.Context, skuName, location string) (skewer.SKU, error) {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+
+	cache, ok := m.skus[location]
+	if !ok {
+		var err error
+		cache, err = m.fetchSKUs(ctx, location)
+		if err != nil {
+			klog.V(1).Infof("Failed to instantiate cache, err: %v", err)
+			return skewer.SKU{}, err
+		}
+		m.skus[location] = cache
+	}
+
+	return cache.Get(ctx, skuName, skewer.VirtualMachines, location)
+}
+
 func (m *azureCache) getRegisteredNodeGroups() []cloudprovider.NodeGroup {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
 	return m.registeredNodeGroups
+}
+
+func (m *azureCache) getAutoscalingOptions(ref azureRef) map[string]string {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+
+	return m.autoscalingOptions[ref]
 }
 
 // FindForInstance returns node group of the given Instance
@@ -276,11 +341,13 @@ func (m *azureCache) FindForInstance(instance *azureRef, vmType string) (cloudpr
 	}
 
 	if vmType == vmTypeVMSS {
-		// Omit virtual machines not managed by vmss.
-		if ok := virtualMachineRE.Match([]byte(inst.Name)); ok {
-			klog.V(3).Infof("Instance %q is not managed by vmss, omit it in autoscaler", instance.Name)
-			m.unownedInstances[inst] = true
-			return nil, nil
+		if m.areAllScaleSetsUniform() {
+			// Omit virtual machines not managed by vmss only in case of uniform scale set.
+			if ok := virtualMachineRE.Match([]byte(inst.Name)); ok {
+				klog.V(3).Infof("Instance %q is not managed by vmss, omit it in autoscaler", instance.Name)
+				m.unownedInstances[inst] = true
+				return nil, nil
+			}
 		}
 	}
 
@@ -301,6 +368,16 @@ func (m *azureCache) FindForInstance(instance *azureRef, vmType string) (cloudpr
 	}
 	klog.V(4).Infof("FindForInstance: Couldn't find node group of instance %q", inst)
 	return nil, nil
+}
+
+// isAllScaleSetsAreUniform determines if all the scale set autoscaler is monitoring are Uniform or not.
+func (m *azureCache) areAllScaleSetsUniform() bool {
+	for _, scaleSet := range m.scaleSets {
+		if scaleSet.VirtualMachineScaleSetProperties.OrchestrationMode == compute.Flexible {
+			return false
+		}
+	}
+	return true
 }
 
 // getInstanceFromCache gets the node group from cache. Returns nil if not found.

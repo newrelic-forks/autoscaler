@@ -24,7 +24,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	v1helper "k8s.io/component-helpers/scheduling/corev1"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
-	pluginhelper "k8s.io/kubernetes/pkg/scheduler/framework/plugins/helper"
+	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/helper"
+	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/names"
 )
 
 // TaintToleration is a plugin that checks if a pod tolerates a node's taints.
@@ -39,7 +40,7 @@ var _ framework.EnqueueExtensions = &TaintToleration{}
 
 const (
 	// Name is the name of the plugin used in the plugin registry and configurations.
-	Name = "TaintToleration"
+	Name = names.TaintToleration
 	// preScoreStateKey is the key in CycleState to TaintToleration pre-computed data for Scoring.
 	preScoreStateKey = "PreScore" + Name
 	// ErrReasonNotMatch is the Filter reason status when not matching.
@@ -53,30 +54,22 @@ func (pl *TaintToleration) Name() string {
 
 // EventsToRegister returns the possible events that may make a Pod
 // failed by this plugin schedulable.
-func (f *TaintToleration) EventsToRegister() []framework.ClusterEvent {
-	return []framework.ClusterEvent{
-		{Resource: framework.Node, ActionType: framework.Add | framework.UpdateNodeTaint},
+func (pl *TaintToleration) EventsToRegister() []framework.ClusterEventWithHint {
+	return []framework.ClusterEventWithHint{
+		{Event: framework.ClusterEvent{Resource: framework.Node, ActionType: framework.Add | framework.Update}},
 	}
 }
 
 // Filter invoked at the filter extension point.
 func (pl *TaintToleration) Filter(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodeInfo *framework.NodeInfo) *framework.Status {
-	if nodeInfo == nil || nodeInfo.Node() == nil {
-		return framework.AsStatus(fmt.Errorf("invalid nodeInfo"))
-	}
+	node := nodeInfo.Node()
 
-	filterPredicate := func(t *v1.Taint) bool {
-		// PodToleratesNodeTaints is only interested in NoSchedule and NoExecute taints.
-		return t.Effect == v1.TaintEffectNoSchedule || t.Effect == v1.TaintEffectNoExecute
-	}
-
-	taint, isUntolerated := v1helper.FindMatchingUntoleratedTaint(nodeInfo.Node().Spec.Taints, pod.Spec.Tolerations, filterPredicate)
+	taint, isUntolerated := v1helper.FindMatchingUntoleratedTaint(node.Spec.Taints, pod.Spec.Tolerations, helper.DoNotScheduleTaintsFilterFunc())
 	if !isUntolerated {
 		return nil
 	}
 
-	errReason := fmt.Sprintf("node(s) had taint {%s: %s}, that the pod didn't tolerate",
-		taint.Key, taint.Value)
+	errReason := fmt.Sprintf("node(s) had untolerated taint {%s: %s}", taint.Key, taint.Value)
 	return framework.NewStatus(framework.UnschedulableAndUnresolvable, errReason)
 }
 
@@ -103,7 +96,7 @@ func getAllTolerationPreferNoSchedule(tolerations []v1.Toleration) (tolerationLi
 }
 
 // PreScore builds and writes cycle state used by Score and NormalizeScore.
-func (pl *TaintToleration) PreScore(ctx context.Context, cycleState *framework.CycleState, pod *v1.Pod, nodes []*v1.Node) *framework.Status {
+func (pl *TaintToleration) PreScore(ctx context.Context, cycleState *framework.CycleState, pod *v1.Pod, nodes []*framework.NodeInfo) *framework.Status {
 	if len(nodes) == 0 {
 		return nil
 	}
@@ -118,7 +111,7 @@ func (pl *TaintToleration) PreScore(ctx context.Context, cycleState *framework.C
 func getPreScoreState(cycleState *framework.CycleState) (*preScoreState, error) {
 	c, err := cycleState.Read(preScoreStateKey)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read %q from cycleState: %v", preScoreStateKey, err)
+		return nil, fmt.Errorf("failed to read %q from cycleState: %w", preScoreStateKey, err)
 	}
 
 	s, ok := c.(*preScoreState)
@@ -162,7 +155,7 @@ func (pl *TaintToleration) Score(ctx context.Context, state *framework.CycleStat
 
 // NormalizeScore invoked after scoring all nodes.
 func (pl *TaintToleration) NormalizeScore(ctx context.Context, _ *framework.CycleState, pod *v1.Pod, scores framework.NodeScoreList) *framework.Status {
-	return pluginhelper.DefaultNormalizeScore(framework.MaxNodeScore, true, scores)
+	return helper.DefaultNormalizeScore(framework.MaxNodeScore, true, scores)
 }
 
 // ScoreExtensions of the Score plugin.
@@ -171,6 +164,6 @@ func (pl *TaintToleration) ScoreExtensions() framework.ScoreExtensions {
 }
 
 // New initializes a new plugin and returns it.
-func New(_ runtime.Object, h framework.Handle) (framework.Plugin, error) {
+func New(_ context.Context, _ runtime.Object, h framework.Handle) (framework.Plugin, error) {
 	return &TaintToleration{handle: h}, nil
 }

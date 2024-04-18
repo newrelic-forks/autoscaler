@@ -1,3 +1,4 @@
+//go:build !providerless
 // +build !providerless
 
 /*
@@ -19,17 +20,13 @@ limitations under the License.
 package gce
 
 const (
-	// AlphaFeatureNetworkTiers allows Services backed by a GCP load balancer to choose
-	// what network tier to use. Currently supports "Standard" and "Premium" (default).
-	//
-	// alpha: v1.8 (for Services)
-	AlphaFeatureNetworkTiers = "NetworkTiers"
 	// AlphaFeatureILBSubsets allows InternalLoadBalancer services to include a subset
 	// of cluster nodes as backends instead of all nodes.
 	AlphaFeatureILBSubsets = "ILBSubsets"
-	// AlphaFeatureILBCustomSubnet allows InternalLoadBalancer services to specify a
-	// network subnet to allocate ip addresses from.
-	AlphaFeatureILBCustomSubnet = "ILBCustomSubnet"
+
+	// AlphaFeatureSkipIGsManagement enabled L4 Regional Backend Services and
+	// disables instance group management in service controller
+	AlphaFeatureSkipIGsManagement = "SkipIGsManagement"
 )
 
 // AlphaFeatureGate contains a mapping of alpha features to whether they are enabled
