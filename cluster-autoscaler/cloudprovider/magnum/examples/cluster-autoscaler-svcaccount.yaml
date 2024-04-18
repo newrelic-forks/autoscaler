@@ -22,6 +22,7 @@ rules:
     verbs: ["watch", "list", "get", "update"]
   - apiGroups: [""]
     resources:
+      - "namespaces"
       - "pods"
       - "services"
       - "replicationcontrollers"
@@ -38,7 +39,7 @@ rules:
     resources: ["daemonsets", "replicasets", "statefulsets"]
     verbs: ["watch", "list", "get"]
   - apiGroups: ["storage.k8s.io"]
-    resources: ["storageclasses"]
+    resources: ["storageclasses", "csinodes", "csidrivers", "csistoragecapacities"]
     verbs: ["watch", "list", "get"]
   - apiGroups: [""]
     resources: ["configmaps"]

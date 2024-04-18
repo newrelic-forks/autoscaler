@@ -28,13 +28,15 @@ import (
 	vpa_types "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1beta2"
 	"k8s.io/kubernetes/test/e2e/framework"
 	framework_deployment "k8s.io/kubernetes/test/e2e/framework/deployment"
+	podsecurity "k8s.io/pod-security-admission/api"
 
-	"github.com/onsi/ginkgo"
+	ginkgo "github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 )
 
 var _ = AdmissionControllerE2eDescribe("Admission-controller", func() {
 	f := framework.NewDefaultFramework("vertical-pod-autoscaling")
+	f.NamespacePodSecurityEnforceLevel = podsecurity.LevelBaseline
 
 	ginkgo.It("starts pods with new recommended request", func() {
 		d := NewHamsterDeploymentWithResources(f, ParseQuantityOrDie("100m") /*cpu*/, ParseQuantityOrDie("100Mi") /*memory*/)
@@ -565,7 +567,7 @@ func startDeploymentPods(f *framework.Framework, deployment *appsv1.Deployment) 
 	err = framework_deployment.WaitForDeploymentComplete(c, deployment)
 	gomega.Expect(err).NotTo(gomega.HaveOccurred(), "when waiting for deployment to resize")
 
-	podList, err := framework_deployment.GetPodsForDeployment(c, deployment)
+	podList, err := framework_deployment.GetPodsForDeployment(context.TODO(), c, deployment)
 	gomega.Expect(err).NotTo(gomega.HaveOccurred(), "when listing pods after deployment resize")
 	return podList
 }

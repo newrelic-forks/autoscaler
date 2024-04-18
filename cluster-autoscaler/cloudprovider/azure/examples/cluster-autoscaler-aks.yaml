@@ -34,6 +34,7 @@ rules:
     verbs: ["watch", "list", "get", "update"]
   - apiGroups: [""]
     resources:
+      - "namespaces"
       - "pods"
       - "services"
       - "replicationcontrollers"
@@ -50,7 +51,7 @@ rules:
     resources: ["statefulsets", "replicasets", "daemonsets"]
     verbs: ["watch", "list", "get"]
   - apiGroups: ["storage.k8s.io"]
-    resources: ["storageclasses", "csinodes"]
+    resources: ["storageclasses", "csinodes", "csidrivers", "csistoragecapacities"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["batch"]
     resources: ["jobs", "cronjobs"]
@@ -127,8 +128,6 @@ data:
   SubscriptionID: <base64-encode-subscription-id>
   TenantID: <base64-encoded-tenant-id>
   VMType: QUtTCg==
-  ClusterName: <base64-encoded-clustername>
-  NodeResourceGroup: <base64-encoded-node-resource-group>
 kind: Secret
 metadata:
   name: cluster-autoscaler-azure
@@ -153,7 +152,7 @@ spec:
     spec:
       serviceAccountName: cluster-autoscaler
       containers:
-        - image: k8s.gcr.io/cluster-autoscaler:{{ ca_version }}
+        - image: registry.k8s.io/autoscaling/cluster-autoscaler:{{ ca_version }}
           imagePullPolicy: Always
           name: cluster-autoscaler
           resources:
@@ -200,15 +199,5 @@ spec:
               valueFrom:
                 secretKeyRef:
                   key: VMType
-                  name: cluster-autoscaler-azure
-            - name: AZURE_CLUSTER_NAME
-              valueFrom:
-                secretKeyRef:
-                  key: ClusterName
-                  name: cluster-autoscaler-azure
-            - name: AZURE_NODE_RESOURCE_GROUP
-              valueFrom:
-                secretKeyRef:
-                  key: NodeResourceGroup
                   name: cluster-autoscaler-azure
       restartPolicy: Always

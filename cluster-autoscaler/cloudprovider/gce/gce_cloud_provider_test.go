@@ -24,6 +24,7 @@ import (
 	"testing"
 
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
+	"k8s.io/autoscaler/cluster-autoscaler/config"
 	. "k8s.io/autoscaler/cluster-autoscaler/utils/test"
 
 	apiv1 "k8s.io/api/core/v1"
@@ -57,9 +58,9 @@ func (m *gceManagerMock) GetMigForInstance(instance GceRef) (Mig, error) {
 	return args.Get(0).(*gceMig), args.Error(1)
 }
 
-func (m *gceManagerMock) GetMigNodes(mig Mig) ([]cloudprovider.Instance, error) {
+func (m *gceManagerMock) GetMigNodes(mig Mig) ([]GceInstance, error) {
 	args := m.Called(mig)
-	return args.Get(0).([]cloudprovider.Instance), args.Error(1)
+	return args.Get(0).([]GceInstance), args.Error(1)
 }
 
 func (m *gceManagerMock) Refresh() error {
@@ -87,6 +88,11 @@ func (m *gceManagerMock) findMigsNamed(name *regexp.Regexp) ([]string, error) {
 	return args.Get(0).([]string), args.Error(1)
 }
 
+func (m *gceManagerMock) GetMigOptions(mig Mig, defaults config.NodeGroupAutoscalingOptions) *config.NodeGroupAutoscalingOptions {
+	args := m.Called(mig, defaults)
+	return args.Get(0).(*config.NodeGroupAutoscalingOptions)
+}
+
 func (m *gceManagerMock) GetMigTemplateNode(mig Mig) (*apiv1.Node, error) {
 	args := m.Called(mig)
 	return args.Get(0).(*apiv1.Node), args.Error(1)
@@ -109,7 +115,7 @@ func TestBuildGceCloudProvider(t *testing.T) {
 		map[string]int64{cloudprovider.ResourceNameCores: 1, cloudprovider.ResourceNameMemory: 10000000},
 		map[string]int64{cloudprovider.ResourceNameCores: 10, cloudprovider.ResourceNameMemory: 100000000})
 
-	provider, err := BuildGceCloudProvider(gceManagerMock, resourceLimiter)
+	provider, err := BuildGceCloudProvider(gceManagerMock, resourceLimiter, nil)
 	assert.NoError(t, err)
 	assert.NotNil(t, provider)
 }
@@ -291,18 +297,24 @@ func TestMig(t *testing.T) {
 	// Test DecreaseTargetSize.
 	gceManagerMock.On("GetMigSize", mock.AnythingOfType("*gce.gceMig")).Return(int64(3), nil).Once()
 	gceManagerMock.On("GetMigNodes", mock.AnythingOfType("*gce.gceMig")).Return(
-		[]cloudprovider.Instance{
+		[]GceInstance{
 			{
-				Id: "gce://project1/us-central1-b/gke-cluster-1-default-pool-f7607aac-9j4g",
-				Status: &cloudprovider.InstanceStatus{
-					State: cloudprovider.InstanceRunning,
+				Instance: cloudprovider.Instance{
+					Id: "gce://project1/us-central1-b/gke-cluster-1-default-pool-f7607aac-9j4g",
+					Status: &cloudprovider.InstanceStatus{
+						State: cloudprovider.InstanceRunning,
+					},
 				},
+				NumericId: 1,
 			},
 			{
-				Id: "gce://project1/us-central1-b/gke-cluster-1-default-pool-f7607aac-dck1",
-				Status: &cloudprovider.InstanceStatus{
-					State: cloudprovider.InstanceRunning,
+				Instance: cloudprovider.Instance{
+					Id: "gce://project1/us-central1-b/gke-cluster-1-default-pool-f7607aac-dck1",
+					Status: &cloudprovider.InstanceStatus{
+						State: cloudprovider.InstanceRunning,
+					},
 				},
+				NumericId: 222,
 			},
 		}, nil).Once()
 	gceManagerMock.On("SetMigSize", mock.AnythingOfType("*gce.gceMig"), int64(2)).Return(nil).Once()
@@ -318,18 +330,24 @@ func TestMig(t *testing.T) {
 	// Test DecreaseTargetSize - fail on deleting existing nodes.
 	gceManagerMock.On("GetMigSize", mock.AnythingOfType("*gce.gceMig")).Return(int64(3), nil).Once()
 	gceManagerMock.On("GetMigNodes", mock.AnythingOfType("*gce.gceMig")).Return(
-		[]cloudprovider.Instance{
+		[]GceInstance{
 			{
-				Id: "gce://project1/us-central1-b/gke-cluster-1-default-pool-f7607aac-9j4g",
-				Status: &cloudprovider.InstanceStatus{
-					State: cloudprovider.InstanceRunning,
+				Instance: cloudprovider.Instance{
+					Id: "gce://project1/us-central1-b/gke-cluster-1-default-pool-f7607aac-9j4g",
+					Status: &cloudprovider.InstanceStatus{
+						State: cloudprovider.InstanceRunning,
+					},
 				},
+				NumericId: 1111,
 			},
 			{
-				Id: "gce://project1/us-central1-b/gke-cluster-1-default-pool-f7607aac-dck1",
-				Status: &cloudprovider.InstanceStatus{
-					State: cloudprovider.InstanceRunning,
+				Instance: cloudprovider.Instance{
+					Id: "gce://project1/us-central1-b/gke-cluster-1-default-pool-f7607aac-dck1",
+					Status: &cloudprovider.InstanceStatus{
+						State: cloudprovider.InstanceRunning,
+					},
 				},
+				NumericId: 333,
 			},
 		}, nil).Once()
 	err = mig1.DecreaseTargetSize(-2)
@@ -389,18 +407,24 @@ func TestMig(t *testing.T) {
 
 	// Test Nodes.
 	gceManagerMock.On("GetMigNodes", mock.AnythingOfType("*gce.gceMig")).Return(
-		[]cloudprovider.Instance{
+		[]GceInstance{
 			{
-				Id: "gce://project1/us-central1-b/gke-cluster-1-default-pool-f7607aac-9j4g",
-				Status: &cloudprovider.InstanceStatus{
-					State: cloudprovider.InstanceRunning,
+				Instance: cloudprovider.Instance{
+					Id: "gce://project1/us-central1-b/gke-cluster-1-default-pool-f7607aac-9j4g",
+					Status: &cloudprovider.InstanceStatus{
+						State: cloudprovider.InstanceRunning,
+					},
 				},
+				NumericId: 1,
 			},
 			{
-				Id: "gce://project1/us-central1-b/gke-cluster-1-default-pool-f7607aac-dck1",
-				Status: &cloudprovider.InstanceStatus{
-					State: cloudprovider.InstanceRunning,
+				Instance: cloudprovider.Instance{
+					Id: "gce://project1/us-central1-b/gke-cluster-1-default-pool-f7607aac-dck1",
+					Status: &cloudprovider.InstanceStatus{
+						State: cloudprovider.InstanceRunning,
+					},
 				},
+				NumericId: 2,
 			},
 		}, nil).Once()
 	nodes, err := mig1.Nodes()

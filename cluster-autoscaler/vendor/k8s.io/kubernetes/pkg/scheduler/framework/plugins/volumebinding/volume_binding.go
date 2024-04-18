@@ -24,23 +24,20 @@ import (
 	"time"
 
 	v1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
-	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	corelisters "k8s.io/client-go/listers/core/v1"
+	"k8s.io/component-helpers/storage/ephemeral"
 	"k8s.io/klog/v2"
-	"k8s.io/kubernetes/pkg/controller/volume/scheduling"
-	"k8s.io/kubernetes/pkg/features"
 	"k8s.io/kubernetes/pkg/scheduler/apis/config"
 	"k8s.io/kubernetes/pkg/scheduler/apis/config/validation"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
+	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/feature"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/helper"
+	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/names"
 )
 
 const (
-	// DefaultBindTimeoutSeconds defines the default bind timeout in seconds
-	DefaultBindTimeoutSeconds = 600
-
 	stateKey framework.StateKey = Name
 
 	maxUtilization = 100
@@ -50,14 +47,15 @@ const (
 // framework.CycleState, in the later phases we don't need to call Write method
 // to update the value
 type stateData struct {
-	skip         bool // set true if pod does not have PVCs
-	boundClaims  []*v1.PersistentVolumeClaim
-	claimsToBind []*v1.PersistentVolumeClaim
-	allBound     bool
+	allBound bool
 	// podVolumesByNode holds the pod's volume information found in the Filter
 	// phase for each node
 	// it's initialized in the PreFilter phase
-	podVolumesByNode map[string]*scheduling.PodVolumes
+	podVolumesByNode map[string]*PodVolumes
+	podVolumeClaims  *PodVolumeClaims
+	// hasStaticBindings declares whether the pod contains one or more StaticBinding.
+	// If not, vloumeBinding will skip score extension point.
+	hasStaticBindings bool
 	sync.Mutex
 }
 
@@ -69,24 +67,51 @@ func (d *stateData) Clone() framework.StateData {
 // In the Filter phase, pod binding cache is created for the pod and used in
 // Reserve and PreBind phases.
 type VolumeBinding struct {
-	Binder                               scheduling.SchedulerVolumeBinder
-	PVCLister                            corelisters.PersistentVolumeClaimLister
-	GenericEphemeralVolumeFeatureEnabled bool
-	scorer                               volumeCapacityScorer
+	Binder    SchedulerVolumeBinder
+	PVCLister corelisters.PersistentVolumeClaimLister
+	scorer    volumeCapacityScorer
+	fts       feature.Features
 }
 
 var _ framework.PreFilterPlugin = &VolumeBinding{}
 var _ framework.FilterPlugin = &VolumeBinding{}
 var _ framework.ReservePlugin = &VolumeBinding{}
 var _ framework.PreBindPlugin = &VolumeBinding{}
+var _ framework.PreScorePlugin = &VolumeBinding{}
 var _ framework.ScorePlugin = &VolumeBinding{}
+var _ framework.EnqueueExtensions = &VolumeBinding{}
 
 // Name is the name of the plugin used in Registry and configurations.
-const Name = "VolumeBinding"
+const Name = names.VolumeBinding
 
 // Name returns name of the plugin. It is used in logs, etc.
 func (pl *VolumeBinding) Name() string {
 	return Name
+}
+
+// EventsToRegister returns the possible events that may make a Pod
+// failed by this plugin schedulable.
+func (pl *VolumeBinding) EventsToRegister() []framework.ClusterEventWithHint {
+	events := []framework.ClusterEventWithHint{
+		// Pods may fail because of missing or mis-configured storage class
+		// (e.g., allowedTopologies, volumeBindingMode), and hence may become
+		// schedulable upon StorageClass Add or Update events.
+		{Event: framework.ClusterEvent{Resource: framework.StorageClass, ActionType: framework.Add | framework.Update}},
+		// We bind PVCs with PVs, so any changes may make the pods schedulable.
+		{Event: framework.ClusterEvent{Resource: framework.PersistentVolumeClaim, ActionType: framework.Add | framework.Update}},
+		{Event: framework.ClusterEvent{Resource: framework.PersistentVolume, ActionType: framework.Add | framework.Update}},
+		// Pods may fail to find available PVs because the node labels do not
+		// match the storage class's allowed topologies or PV's node affinity.
+		// A new or updated node may make pods schedulable.
+		{Event: framework.ClusterEvent{Resource: framework.Node, ActionType: framework.Add | framework.UpdateNodeLabel}},
+		// We rely on CSI node to translate in-tree PV to CSI.
+		{Event: framework.ClusterEvent{Resource: framework.CSINode, ActionType: framework.Add | framework.Update}},
+		// When CSIStorageCapacity is enabled, pods may become schedulable
+		// on CSI driver & storage capacity changes.
+		{Event: framework.ClusterEvent{Resource: framework.CSIDriver, ActionType: framework.Add | framework.Update}},
+		{Event: framework.ClusterEvent{Resource: framework.CSIStorageCapacity, ActionType: framework.Add | framework.Update}},
+	}
+	return events
 }
 
 // podHasPVCs returns 2 values:
@@ -96,13 +121,13 @@ func (pl *VolumeBinding) podHasPVCs(pod *v1.Pod) (bool, error) {
 	hasPVC := false
 	for _, vol := range pod.Spec.Volumes {
 		var pvcName string
-		ephemeral := false
+		isEphemeral := false
 		switch {
 		case vol.PersistentVolumeClaim != nil:
 			pvcName = vol.PersistentVolumeClaim.ClaimName
-		case vol.Ephemeral != nil && pl.GenericEphemeralVolumeFeatureEnabled:
-			pvcName = pod.Name + "-" + vol.Name
-			ephemeral = true
+		case vol.Ephemeral != nil:
+			pvcName = ephemeral.VolumeClaimName(pod, &vol)
+			isEphemeral = true
 		default:
 			// Volume is not using a PVC, ignore
 			continue
@@ -110,16 +135,27 @@ func (pl *VolumeBinding) podHasPVCs(pod *v1.Pod) (bool, error) {
 		hasPVC = true
 		pvc, err := pl.PVCLister.PersistentVolumeClaims(pod.Namespace).Get(pvcName)
 		if err != nil {
-			// The error has already enough context ("persistentvolumeclaim "myclaim" not found")
+			// The error usually has already enough context ("persistentvolumeclaim "myclaim" not found"),
+			// but we can do better for generic ephemeral inline volumes where that situation
+			// is normal directly after creating a pod.
+			if isEphemeral && apierrors.IsNotFound(err) {
+				err = fmt.Errorf("waiting for ephemeral volume controller to create the persistentvolumeclaim %q", pvcName)
+			}
 			return hasPVC, err
+		}
+
+		if pvc.Status.Phase == v1.ClaimLost {
+			return hasPVC, fmt.Errorf("persistentvolumeclaim %q bound to non-existent persistentvolume %q", pvc.Name, pvc.Spec.VolumeName)
 		}
 
 		if pvc.DeletionTimestamp != nil {
 			return hasPVC, fmt.Errorf("persistentvolumeclaim %q is being deleted", pvc.Name)
 		}
 
-		if ephemeral && !metav1.IsControlledBy(pvc, pod) {
-			return hasPVC, fmt.Errorf("persistentvolumeclaim %q was not created for the pod", pvc.Name)
+		if isEphemeral {
+			if err := ephemeral.VolumeIsForPod(pod, pvc); err != nil {
+				return hasPVC, err
+			}
 		}
 	}
 	return hasPVC, nil
@@ -128,28 +164,44 @@ func (pl *VolumeBinding) podHasPVCs(pod *v1.Pod) (bool, error) {
 // PreFilter invoked at the prefilter extension point to check if pod has all
 // immediate PVCs bound. If not all immediate PVCs are bound, an
 // UnschedulableAndUnresolvable is returned.
-func (pl *VolumeBinding) PreFilter(ctx context.Context, state *framework.CycleState, pod *v1.Pod) *framework.Status {
+func (pl *VolumeBinding) PreFilter(ctx context.Context, state *framework.CycleState, pod *v1.Pod) (*framework.PreFilterResult, *framework.Status) {
+	logger := klog.FromContext(ctx)
 	// If pod does not reference any PVC, we don't need to do anything.
 	if hasPVC, err := pl.podHasPVCs(pod); err != nil {
-		return framework.NewStatus(framework.UnschedulableAndUnresolvable, err.Error())
+		return nil, framework.NewStatus(framework.UnschedulableAndUnresolvable, err.Error())
 	} else if !hasPVC {
-		state.Write(stateKey, &stateData{skip: true})
-		return nil
+		state.Write(stateKey, &stateData{})
+		return nil, framework.NewStatus(framework.Skip)
 	}
-	boundClaims, claimsToBind, unboundClaimsImmediate, err := pl.Binder.GetPodVolumes(pod)
+	podVolumeClaims, err := pl.Binder.GetPodVolumeClaims(logger, pod)
 	if err != nil {
-		return framework.AsStatus(err)
+		return nil, framework.AsStatus(err)
 	}
-	if len(unboundClaimsImmediate) > 0 {
+	if len(podVolumeClaims.unboundClaimsImmediate) > 0 {
 		// Return UnschedulableAndUnresolvable error if immediate claims are
 		// not bound. Pod will be moved to active/backoff queues once these
 		// claims are bound by PV controller.
 		status := framework.NewStatus(framework.UnschedulableAndUnresolvable)
 		status.AppendReason("pod has unbound immediate PersistentVolumeClaims")
-		return status
+		return nil, status
 	}
-	state.Write(stateKey, &stateData{boundClaims: boundClaims, claimsToBind: claimsToBind, podVolumesByNode: make(map[string]*scheduling.PodVolumes)})
-	return nil
+	// Attempt to reduce down the number of nodes to consider in subsequent scheduling stages if pod has bound claims.
+	var result *framework.PreFilterResult
+	if eligibleNodes := pl.Binder.GetEligibleNodes(logger, podVolumeClaims.boundClaims); eligibleNodes != nil {
+		result = &framework.PreFilterResult{
+			NodeNames: eligibleNodes,
+		}
+	}
+
+	state.Write(stateKey, &stateData{
+		podVolumesByNode: make(map[string]*PodVolumes),
+		podVolumeClaims: &PodVolumeClaims{
+			boundClaims:                podVolumeClaims.boundClaims,
+			unboundClaimsDelayBinding:  podVolumeClaims.unboundClaimsDelayBinding,
+			unboundVolumesDelayBinding: podVolumeClaims.unboundVolumesDelayBinding,
+		},
+	})
+	return result, nil
 }
 
 // PreFilterExtensions returns prefilter extensions, pod add and remove.
@@ -185,21 +237,15 @@ func getStateData(cs *framework.CycleState) (*stateData, error) {
 // The predicate returns true if all bound PVCs have compatible PVs with the node, and if all unbound
 // PVCs can be matched with an available and node-compatible PV.
 func (pl *VolumeBinding) Filter(ctx context.Context, cs *framework.CycleState, pod *v1.Pod, nodeInfo *framework.NodeInfo) *framework.Status {
+	logger := klog.FromContext(ctx)
 	node := nodeInfo.Node()
-	if node == nil {
-		return framework.NewStatus(framework.Error, "node not found")
-	}
 
 	state, err := getStateData(cs)
 	if err != nil {
 		return framework.AsStatus(err)
 	}
 
-	if state.skip {
-		return nil
-	}
-
-	podVolumes, reasons, err := pl.Binder.FindPodVolumes(pod, state.boundClaims, state.claimsToBind, node)
+	podVolumes, reasons, err := pl.Binder.FindPodVolumes(logger, pod, state.podVolumeClaims, node)
 
 	if err != nil {
 		return framework.AsStatus(err)
@@ -216,23 +262,25 @@ func (pl *VolumeBinding) Filter(ctx context.Context, cs *framework.CycleState, p
 	// multiple goroutines call `Filter` on different nodes simultaneously and the `CycleState` may be duplicated, so we must use a local lock here
 	state.Lock()
 	state.podVolumesByNode[node.Name] = podVolumes
+	state.hasStaticBindings = state.hasStaticBindings || (podVolumes != nil && len(podVolumes.StaticBindings) > 0)
 	state.Unlock()
 	return nil
 }
 
-var (
-	// TODO (for alpha) make it configurable in config.VolumeBindingArgs
-	defaultShapePoint = []config.UtilizationShapePoint{
-		{
-			Utilization: 0,
-			Score:       0,
-		},
-		{
-			Utilization: 100,
-			Score:       int32(config.MaxCustomPriorityScore),
-		},
+// PreScore invoked at the preScore extension point. It checks whether volumeBinding can skip Score
+func (pl *VolumeBinding) PreScore(ctx context.Context, cs *framework.CycleState, pod *v1.Pod, nodes []*framework.NodeInfo) *framework.Status {
+	if pl.scorer == nil {
+		return framework.NewStatus(framework.Skip)
 	}
-)
+	state, err := getStateData(cs)
+	if err != nil {
+		return framework.AsStatus(err)
+	}
+	if state.hasStaticBindings {
+		return nil
+	}
+	return framework.NewStatus(framework.Skip)
+}
 
 // Score invoked at the score extension point.
 func (pl *VolumeBinding) Score(ctx context.Context, cs *framework.CycleState, pod *v1.Pod, nodeName string) (int64, *framework.Status) {
@@ -253,7 +301,7 @@ func (pl *VolumeBinding) Score(ctx context.Context, cs *framework.CycleState, po
 		class := staticBinding.StorageClassName()
 		storageResource := staticBinding.StorageResource()
 		if _, ok := classResources[class]; !ok {
-			classResources[class] = &scheduling.StorageResource{
+			classResources[class] = &StorageResource{
 				Requested: 0,
 				Capacity:  0,
 			}
@@ -278,7 +326,7 @@ func (pl *VolumeBinding) Reserve(ctx context.Context, cs *framework.CycleState, 
 	// we don't need to hold the lock as only one node will be reserved for the given pod
 	podVolumes, ok := state.podVolumesByNode[nodeName]
 	if ok {
-		allBound, err := pl.Binder.AssumePodVolumes(pod, nodeName, podVolumes)
+		allBound, err := pl.Binder.AssumePodVolumes(klog.FromContext(ctx), pod, nodeName, podVolumes)
 		if err != nil {
 			return framework.AsStatus(err)
 		}
@@ -309,13 +357,14 @@ func (pl *VolumeBinding) PreBind(ctx context.Context, cs *framework.CycleState, 
 	if !ok {
 		return framework.AsStatus(fmt.Errorf("no pod volumes found for node %q", nodeName))
 	}
-	klog.V(5).InfoS("Trying to bind volumes for pod", "pod", klog.KObj(pod))
-	err = pl.Binder.BindPodVolumes(pod, podVolumes)
+	logger := klog.FromContext(ctx)
+	logger.V(5).Info("Trying to bind volumes for pod", "pod", klog.KObj(pod))
+	err = pl.Binder.BindPodVolumes(ctx, pod, podVolumes)
 	if err != nil {
-		klog.V(1).InfoS("Failed to bind volumes for pod", "pod", klog.KObj(pod), "err", err)
+		logger.V(5).Info("Failed to bind volumes for pod", "pod", klog.KObj(pod), "err", err)
 		return framework.AsStatus(err)
 	}
-	klog.V(5).InfoS("Success binding volumes for pod", "pod", klog.KObj(pod))
+	logger.V(5).Info("Success binding volumes for pod", "pod", klog.KObj(pod))
 	return nil
 }
 
@@ -332,16 +381,17 @@ func (pl *VolumeBinding) Unreserve(ctx context.Context, cs *framework.CycleState
 		return
 	}
 	pl.Binder.RevertAssumedPodVolumes(podVolumes)
-	return
 }
 
 // New initializes a new plugin and returns it.
-func New(plArgs runtime.Object, fh framework.Handle) (framework.Plugin, error) {
+func New(ctx context.Context, plArgs runtime.Object, fh framework.Handle, fts feature.Features) (framework.Plugin, error) {
 	args, ok := plArgs.(*config.VolumeBindingArgs)
 	if !ok {
 		return nil, fmt.Errorf("want args to be of type VolumeBindingArgs, got %T", plArgs)
 	}
-	if err := validation.ValidateVolumeBindingArgs(nil, args); err != nil {
+	if err := validation.ValidateVolumeBindingArgsWithOptions(nil, args, validation.VolumeBindingArgsValidationOptions{
+		AllowVolumeCapacityPriority: fts.EnableVolumeCapacityPriority,
+	}); err != nil {
 		return nil, err
 	}
 	podInformer := fh.SharedInformerFactory().Core().V1().Pods()
@@ -350,20 +400,17 @@ func New(plArgs runtime.Object, fh framework.Handle) (framework.Plugin, error) {
 	pvInformer := fh.SharedInformerFactory().Core().V1().PersistentVolumes()
 	storageClassInformer := fh.SharedInformerFactory().Storage().V1().StorageClasses()
 	csiNodeInformer := fh.SharedInformerFactory().Storage().V1().CSINodes()
-	var capacityCheck *scheduling.CapacityCheck
-	if utilfeature.DefaultFeatureGate.Enabled(features.CSIStorageCapacity) {
-		capacityCheck = &scheduling.CapacityCheck{
-			CSIDriverInformer:          fh.SharedInformerFactory().Storage().V1().CSIDrivers(),
-			CSIStorageCapacityInformer: fh.SharedInformerFactory().Storage().V1beta1().CSIStorageCapacities(),
-		}
+	capacityCheck := CapacityCheck{
+		CSIDriverInformer:          fh.SharedInformerFactory().Storage().V1().CSIDrivers(),
+		CSIStorageCapacityInformer: fh.SharedInformerFactory().Storage().V1().CSIStorageCapacities(),
 	}
-	binder := scheduling.NewVolumeBinder(fh.ClientSet(), podInformer, nodeInformer, csiNodeInformer, pvcInformer, pvInformer, storageClassInformer, capacityCheck, time.Duration(args.BindTimeoutSeconds)*time.Second)
+	binder := NewVolumeBinder(klog.FromContext(ctx), fh.ClientSet(), podInformer, nodeInformer, csiNodeInformer, pvcInformer, pvInformer, storageClassInformer, capacityCheck, time.Duration(args.BindTimeoutSeconds)*time.Second)
 
 	// build score function
 	var scorer volumeCapacityScorer
-	if utilfeature.DefaultFeatureGate.Enabled(features.VolumeCapacityPriority) {
-		shape := make(helper.FunctionShape, 0, len(defaultShapePoint))
-		for _, point := range defaultShapePoint {
+	if fts.EnableVolumeCapacityPriority {
+		shape := make(helper.FunctionShape, 0, len(args.Shape))
+		for _, point := range args.Shape {
 			shape = append(shape, helper.FunctionShapePoint{
 				Utilization: int64(point.Utilization),
 				Score:       int64(point.Score) * (framework.MaxNodeScore / config.MaxCustomPriorityScore),
@@ -372,9 +419,9 @@ func New(plArgs runtime.Object, fh framework.Handle) (framework.Plugin, error) {
 		scorer = buildScorerFunction(shape)
 	}
 	return &VolumeBinding{
-		Binder:                               binder,
-		PVCLister:                            pvcInformer.Lister(),
-		GenericEphemeralVolumeFeatureEnabled: utilfeature.DefaultFeatureGate.Enabled(features.GenericEphemeralVolume),
-		scorer:                               scorer,
+		Binder:    binder,
+		PVCLister: pvcInformer.Lister(),
+		scorer:    scorer,
+		fts:       fts,
 	}, nil
 }

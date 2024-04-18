@@ -19,11 +19,12 @@ package history
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"sort"
 	"strings"
 	"time"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 
 	promapi "github.com/prometheus/client_golang/api"
 	prometheusv1 "github.com/prometheus/client_golang/api/prometheus/v1"
@@ -31,6 +32,18 @@ import (
 
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/recommender/model"
 )
+
+// PrometheusBasicAuthTransport contains the username and password of prometheus server
+type PrometheusBasicAuthTransport struct {
+	Username string
+	Password string
+}
+
+// RoundTrip function injects the username and password in the request's basic auth header
+func (t *PrometheusBasicAuthTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req.SetBasicAuth(t.Username, t.Password)
+	return http.DefaultTransport.RoundTrip(req)
+}
 
 // PrometheusHistoryProviderConfig allow to select which metrics
 // should be queried to get real resource utilization.
@@ -43,6 +56,7 @@ type PrometheusHistoryProviderConfig struct {
 	CtrNamespaceLabel, CtrPodNameLabel, CtrNameLabel string
 	CadvisorMetricsJobName                           string
 	Namespace                                        string
+	PrometheusBasicAuthTransport
 }
 
 // PodHistory represents history of usage and labels for a given pod.
@@ -74,11 +88,21 @@ type prometheusHistoryProvider struct {
 	historyResolution prommodel.Duration
 }
 
-// NewPrometheusHistoryProvider contructs a history provider that gets data from Prometheus.
+// NewPrometheusHistoryProvider constructs a history provider that gets data from Prometheus.
 func NewPrometheusHistoryProvider(config PrometheusHistoryProviderConfig) (HistoryProvider, error) {
-	promClient, err := promapi.NewClient(promapi.Config{
+	promConfig := promapi.Config{
 		Address: config.Address,
-	})
+	}
+
+	if config.Username != "" && config.Password != "" {
+		transport := &PrometheusBasicAuthTransport{
+			Username: config.Username,
+			Password: config.Password,
+		}
+		promConfig.RoundTripper = transport
+	}
+
+	promClient, err := promapi.NewClient(promConfig)
 	if err != nil {
 		return &prometheusHistoryProvider{}, err
 	}
@@ -289,6 +313,10 @@ func (p *prometheusHistoryProvider) GetClusterHistory() (map[model.PodID]*PodHis
 			sort.Slice(samples, func(i, j int) bool { return samples[i].MeasureStart.Before(samples[j].MeasureStart) })
 		}
 	}
-	p.readLastLabels(res, p.config.PodLabelsMetricName)
+	err = p.readLastLabels(res, p.config.PodLabelsMetricName)
+	if err != nil {
+		return nil, fmt.Errorf("cannot read last labels: %v", err)
+	}
+
 	return res, nil
 }

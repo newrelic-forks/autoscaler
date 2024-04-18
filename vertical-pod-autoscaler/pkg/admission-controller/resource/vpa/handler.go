@@ -20,12 +20,15 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"k8s.io/api/admission/v1beta1"
+	v1 "k8s.io/api/admission/v1"
+	corev1 "k8s.io/api/core/v1"
+	apires "k8s.io/apimachinery/pkg/api/resource"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/admission-controller/resource"
 	vpa_types "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/metrics/admission"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 var (
@@ -68,8 +71,8 @@ func (h *resourceHandler) DisallowIncorrectObjects() bool {
 }
 
 // GetPatches builds patches for VPA in given admission request.
-func (h *resourceHandler) GetPatches(ar *v1beta1.AdmissionRequest) ([]resource.PatchRecord, error) {
-	raw, isCreate := ar.Object.Raw, ar.Operation == v1beta1.Create
+func (h *resourceHandler) GetPatches(ar *v1.AdmissionRequest) ([]resource.PatchRecord, error) {
+	raw, isCreate := ar.Object.Raw, ar.Operation == v1.Create
 	vpa, err := parseVPA(raw)
 	if err != nil {
 		return nil, err
@@ -80,7 +83,7 @@ func (h *resourceHandler) GetPatches(ar *v1beta1.AdmissionRequest) ([]resource.P
 		return nil, err
 	}
 
-	err = validateVPA(vpa, isCreate)
+	err = ValidateVPA(vpa, isCreate)
 	if err != nil {
 		return nil, err
 	}
@@ -106,7 +109,8 @@ func parseVPA(raw []byte) (*vpa_types.VerticalPodAutoscaler, error) {
 	return &vpa, nil
 }
 
-func validateVPA(vpa *vpa_types.VerticalPodAutoscaler, isCreate bool) error {
+// ValidateVPA checks the correctness of VPA Spec and returns an error if there is a problem.
+func ValidateVPA(vpa *vpa_types.VerticalPodAutoscaler, isCreate bool) error {
 	if vpa.Spec.UpdatePolicy != nil {
 		mode := vpa.Spec.UpdatePolicy.UpdateMode
 		if mode == nil {
@@ -114,6 +118,10 @@ func validateVPA(vpa *vpa_types.VerticalPodAutoscaler, isCreate bool) error {
 		}
 		if _, found := possibleUpdateModes[*mode]; !found {
 			return fmt.Errorf("unexpected UpdateMode value %s", *mode)
+		}
+
+		if minReplicas := vpa.Spec.UpdatePolicy.MinReplicas; minReplicas != nil && *minReplicas <= 0 {
+			return fmt.Errorf("MinReplicas has to be positive, got %v", *minReplicas)
 		}
 	}
 
@@ -129,9 +137,18 @@ func validateVPA(vpa *vpa_types.VerticalPodAutoscaler, isCreate bool) error {
 				}
 			}
 			for resource, min := range policy.MinAllowed {
+				if err := validateResourceResolution(resource, min); err != nil {
+					return fmt.Errorf("MinAllowed: %v", err)
+				}
 				max, found := policy.MaxAllowed[resource]
 				if found && max.Cmp(min) < 0 {
 					return fmt.Errorf("max resource for %v is lower than min", resource)
+				}
+			}
+
+			for resource, max := range policy.MaxAllowed {
+				if err := validateResourceResolution(resource, max); err != nil {
+					return fmt.Errorf("MaxAllowed: %v", err)
 				}
 			}
 			ControlledValues := policy.ControlledValues
@@ -147,5 +164,33 @@ func validateVPA(vpa *vpa_types.VerticalPodAutoscaler, isCreate bool) error {
 		return fmt.Errorf("TargetRef is required. If you're using v1beta1 version of the API, please migrate to v1")
 	}
 
+	if len(vpa.Spec.Recommenders) > 1 {
+		return fmt.Errorf("The current version of VPA object shouldn't specify more than one recommenders.")
+	}
+
+	return nil
+}
+
+func validateResourceResolution(name corev1.ResourceName, val apires.Quantity) error {
+	switch name {
+	case corev1.ResourceCPU:
+		return validateCPUResolution(val)
+	case corev1.ResourceMemory:
+		return validateMemoryResolution(val)
+	}
+	return nil
+}
+
+func validateCPUResolution(val apires.Quantity) error {
+	if _, precissionPreserved := val.AsScale(apires.Milli); !precissionPreserved {
+		return fmt.Errorf("CPU [%s] must be a whole number of milli CPUs", val.String())
+	}
+	return nil
+}
+
+func validateMemoryResolution(val apires.Quantity) error {
+	if _, precissionPreserved := val.AsScale(0); !precissionPreserved {
+		return fmt.Errorf("Memory [%v] must be a whole number of bytes", val)
+	}
 	return nil
 }

@@ -1,19 +1,3 @@
-/*
-Copyright 2018 The Kubernetes Authors.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
-
 package hcloud
 
 import (
@@ -27,7 +11,7 @@ import (
 
 // LoadBalancerType represents a LoadBalancer type in the Hetzner Cloud.
 type LoadBalancerType struct {
-	ID                      int
+	ID                      int64
 	Name                    string
 	Description             string
 	MaxConnections          int
@@ -43,7 +27,7 @@ type LoadBalancerTypeClient struct {
 }
 
 // GetByID retrieves a Load Balancer type by its ID. If the Load Balancer type does not exist, nil is returned.
-func (c *LoadBalancerTypeClient) GetByID(ctx context.Context, id int) (*LoadBalancerType, *Response, error) {
+func (c *LoadBalancerTypeClient) GetByID(ctx context.Context, id int64) (*LoadBalancerType, *Response, error) {
 	req, err := c.client.NewRequest(ctx, "GET", fmt.Sprintf("/load_balancer_types/%d", id), nil)
 	if err != nil {
 		return nil, nil, err
@@ -75,8 +59,8 @@ func (c *LoadBalancerTypeClient) GetByName(ctx context.Context, name string) (*L
 // Get retrieves a Load Balancer type by its ID if the input can be parsed as an integer, otherwise it
 // retrieves a Load Balancer type by its name. If the Load Balancer type does not exist, nil is returned.
 func (c *LoadBalancerTypeClient) Get(ctx context.Context, idOrName string) (*LoadBalancerType, *Response, error) {
-	if id, err := strconv.Atoi(idOrName); err == nil {
-		return c.GetByID(ctx, int(id))
+	if id, err := strconv.ParseInt(idOrName, 10, 64); err == nil {
+		return c.GetByID(ctx, id)
 	}
 	return c.GetByName(ctx, idOrName)
 }
@@ -85,12 +69,16 @@ func (c *LoadBalancerTypeClient) Get(ctx context.Context, idOrName string) (*Loa
 type LoadBalancerTypeListOpts struct {
 	ListOpts
 	Name string
+	Sort []string
 }
 
 func (l LoadBalancerTypeListOpts) values() url.Values {
-	vals := l.ListOpts.values()
+	vals := l.ListOpts.Values()
 	if l.Name != "" {
 		vals.Add("name", l.Name)
+	}
+	for _, sort := range l.Sort {
+		vals.Add("sort", sort)
 	}
 	return vals
 }
@@ -120,12 +108,14 @@ func (c *LoadBalancerTypeClient) List(ctx context.Context, opts LoadBalancerType
 
 // All returns all Load Balancer types.
 func (c *LoadBalancerTypeClient) All(ctx context.Context) ([]*LoadBalancerType, error) {
+	return c.AllWithOpts(ctx, LoadBalancerTypeListOpts{ListOpts: ListOpts{PerPage: 50}})
+}
+
+// AllWithOpts returns all Load Balancer types for the given options.
+func (c *LoadBalancerTypeClient) AllWithOpts(ctx context.Context, opts LoadBalancerTypeListOpts) ([]*LoadBalancerType, error) {
 	allLoadBalancerTypes := []*LoadBalancerType{}
 
-	opts := LoadBalancerTypeListOpts{}
-	opts.PerPage = 50
-
-	_, err := c.client.all(func(page int) (*Response, error) {
+	err := c.client.all(func(page int) (*Response, error) {
 		opts.Page = page
 		LoadBalancerTypes, resp, err := c.List(ctx, opts)
 		if err != nil {

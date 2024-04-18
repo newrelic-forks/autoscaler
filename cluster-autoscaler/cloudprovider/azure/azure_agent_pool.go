@@ -24,7 +24,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2019-12-01/compute"
+	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2022-08-01/compute"
 	"github.com/Azure/azure-sdk-for-go/services/resources/mgmt/2017-05-10/resources"
 	azStorage "github.com/Azure/azure-sdk-for-go/storage"
 	"github.com/Azure/go-autorest/autorest/to"
@@ -335,6 +335,11 @@ func (as *AgentPool) IncreaseSize(delta int) error {
 	return realError
 }
 
+// AtomicIncreaseSize is not implemented.
+func (as *AgentPool) AtomicIncreaseSize(delta int) error {
+	return cloudprovider.ErrNotImplemented
+}
+
 // DecreaseTargetSize decreases the target size of the node group. This function
 // doesn't permit to delete any existing node and can be used only to reduce the
 // request for new nodes that have not been yet fulfilled. Delta should be negative.
@@ -498,7 +503,7 @@ func (as *AgentPool) deleteBlob(accountName, vhdContainer, vhdBlob string) error
 	ctx, cancel := getContextWithCancel()
 	defer cancel()
 
-	storageKeysResult, rerr := as.manager.azClient.storageAccountsClient.ListKeys(ctx, as.manager.config.ResourceGroup, accountName)
+	storageKeysResult, rerr := as.manager.azClient.storageAccountsClient.ListKeys(ctx, as.manager.config.SubscriptionID, as.manager.config.ResourceGroup, accountName)
 	if rerr != nil {
 		return rerr.Error()
 	}
@@ -600,7 +605,7 @@ func (as *AgentPool) deleteVirtualMachine(name string) error {
 			klog.Infof("deleting managed disk: %s/%s", as.manager.config.ResourceGroup, *osDiskName)
 			disksCtx, disksCancel := getContextWithCancel()
 			defer disksCancel()
-			rerr := as.manager.azClient.disksClient.Delete(disksCtx, as.manager.config.ResourceGroup, *osDiskName)
+			rerr := as.manager.azClient.disksClient.Delete(disksCtx, as.manager.config.SubscriptionID, as.manager.config.ResourceGroup, *osDiskName)
 			_, realErr := checkResourceExistsFromRetryError(rerr)
 			if realErr != nil {
 				return realErr

@@ -215,12 +215,12 @@ func translateTopologyFromInTreeToCSI(pv *v1.PersistentVolume, csiTopologyKey st
 // getTopologyLabel checks if the kubernetes topology label used in this
 // PV is GA and return the zone/region label used.
 // The version checking follows the following orders
-// 1. Check NodeAffinity
-//   1.1 Check if zoneGA exists, if yes return GA labels
-//   1.2 Check if zoneBeta exists, if yes return Beta labels
-// 2. Check PV labels
-//   2.1 Check if zoneGA exists, if yes return GA labels
-//   2.2 Check if zoneBeta exists, if yes return Beta labels
+//  1. Check NodeAffinity
+//     1.1 Check if zoneGA exists, if yes return GA labels
+//     1.2 Check if zoneBeta exists, if yes return Beta labels
+//  2. Check PV labels
+//     2.1 Check if zoneGA exists, if yes return GA labels
+//     2.2 Check if zoneBeta exists, if yes return Beta labels
 func getTopologyLabel(pv *v1.PersistentVolume) (zoneLabel string, regionLabel string) {
 
 	if zoneGA := TopologyKeyExist(v1.LabelTopologyZone, pv.Spec.NodeAffinity); zoneGA {
@@ -306,7 +306,7 @@ func translateTopologyFromCSIToInTree(pv *v1.PersistentVolume, csiTopologyKey st
 	return nil
 }
 
-// translateAllowedTopologies translates allowed topologies within storage class
+// translateAllowedTopologies translates allowed topologies within storage class or PV
 // from legacy failure domain to given CSI topology key
 func translateAllowedTopologies(terms []v1.TopologySelectorTerm, key string) ([]v1.TopologySelectorTerm, error) {
 	if terms == nil {
@@ -323,10 +323,9 @@ func translateAllowedTopologies(terms []v1.TopologySelectorTerm, key string) ([]
 					Key:    key,
 					Values: exp.Values,
 				}
-			} else if exp.Key == key {
-				newExp = exp
 			} else {
-				return nil, fmt.Errorf("unknown topology key: %v", exp.Key)
+				// Other topologies are passed through unchanged.
+				newExp = exp
 			}
 			newTerm.MatchLabelExpressions = append(newTerm.MatchLabelExpressions, newExp)
 		}

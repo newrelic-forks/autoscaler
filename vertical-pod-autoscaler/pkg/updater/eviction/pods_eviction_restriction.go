@@ -23,14 +23,15 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	apiv1 "k8s.io/api/core/v1"
-	policyv1 "k8s.io/api/policy/v1beta1"
+	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	vpa_types "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	appsinformer "k8s.io/client-go/informers/apps/v1"
 	coreinformer "k8s.io/client-go/informers/core/v1"
 	kube_client "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 const (
@@ -64,8 +65,9 @@ type singleGroupStats struct {
 
 // PodsEvictionRestrictionFactory creates PodsEvictionRestriction
 type PodsEvictionRestrictionFactory interface {
-	// NewPodsEvictionRestriction creates PodsEvictionRestriction for given set of pods.
-	NewPodsEvictionRestriction(pods []*apiv1.Pod) PodsEvictionRestriction
+	// NewPodsEvictionRestriction creates PodsEvictionRestriction for given set of pods,
+	// controlled by a single VPA object.
+	NewPodsEvictionRestriction(pods []*apiv1.Pod, vpa *vpa_types.VerticalPodAutoscaler) PodsEvictionRestriction
 }
 
 type podsEvictionRestrictionFactoryImpl struct {
@@ -73,6 +75,7 @@ type podsEvictionRestrictionFactoryImpl struct {
 	rcInformer                cache.SharedIndexInformer // informer for Replication Controllers
 	ssInformer                cache.SharedIndexInformer // informer for Stateful Sets
 	rsInformer                cache.SharedIndexInformer // informer for Replica Sets
+	dsInformer                cache.SharedIndexInformer // informer for Daemon Sets
 	minReplicas               int
 	evictionToleranceFraction float64
 }
@@ -83,6 +86,7 @@ const (
 	replicationController controllerKind = "ReplicationController"
 	statefulSet           controllerKind = "StatefulSet"
 	replicaSet            controllerKind = "ReplicaSet"
+	daemonSet             controllerKind = "DaemonSet"
 	job                   controllerKind = "Job"
 )
 
@@ -105,7 +109,7 @@ func (e *podsEvictionRestrictionImpl) CanEvict(pod *apiv1.Pod) bool {
 			if singleGroupStats.running-singleGroupStats.evicted > shouldBeAlive {
 				return true
 			}
-			// If all pods are running and eviction tollerance is small evict 1 pod.
+			// If all pods are running and eviction tolerance is small evict 1 pod.
 			if singleGroupStats.running == singleGroupStats.configured &&
 				singleGroupStats.evictionTolerance == 0 &&
 				singleGroupStats.evicted == 0 {
@@ -134,7 +138,7 @@ func (e *podsEvictionRestrictionImpl) Evict(podToEvict *apiv1.Pod, eventRecorder
 			Name:      podToEvict.Name,
 		},
 	}
-	err := e.client.CoreV1().Pods(podToEvict.Namespace).Evict(context.TODO(), eviction)
+	err := e.client.CoreV1().Pods(podToEvict.Namespace).EvictV1(context.TODO(), eviction)
 	if err != nil {
 		klog.Errorf("failed to evict pod %s/%s, error: %v", podToEvict.Namespace, podToEvict.Name, err)
 		return err
@@ -169,17 +173,23 @@ func NewPodsEvictionRestrictionFactory(client kube_client.Interface, minReplicas
 	if err != nil {
 		return nil, fmt.Errorf("Failed to create rsInformer: %v", err)
 	}
+	dsInformer, err := setUpInformer(client, daemonSet)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to create dsInformer: %v", err)
+	}
 	return &podsEvictionRestrictionFactoryImpl{
 		client:                    client,
 		rcInformer:                rcInformer, // informer for Replication Controllers
 		ssInformer:                ssInformer, // informer for Replica Sets
 		rsInformer:                rsInformer, // informer for Stateful Sets
+		dsInformer:                dsInformer, // informer for Daemon Sets
 		minReplicas:               minReplicas,
 		evictionToleranceFraction: evictionToleranceFraction}, nil
 }
 
-// NewPodsEvictionRestriction creates PodsEvictionRestriction for a given set of pods.
-func (f *podsEvictionRestrictionFactoryImpl) NewPodsEvictionRestriction(pods []*apiv1.Pod) PodsEvictionRestriction {
+// NewPodsEvictionRestriction creates PodsEvictionRestriction for a given set of pods,
+// controlled by a single VPA object.
+func (f *podsEvictionRestrictionFactoryImpl) NewPodsEvictionRestriction(pods []*apiv1.Pod, vpa *vpa_types.VerticalPodAutoscaler) PodsEvictionRestriction {
 	// We can evict pod only if it is a part of replica set
 	// For each replica set we can evict only a fraction of pods.
 	// Evictions may be later limited by pod disruption budget if configured.
@@ -202,11 +212,19 @@ func (f *podsEvictionRestrictionFactoryImpl) NewPodsEvictionRestriction(pods []*
 	podToReplicaCreatorMap := make(map[string]podReplicaCreator)
 	creatorToSingleGroupStatsMap := make(map[podReplicaCreator]singleGroupStats)
 
+	// Use per-VPA minReplicas if present, fall back to the global setting.
+	required := f.minReplicas
+	if vpa.Spec.UpdatePolicy != nil && vpa.Spec.UpdatePolicy.MinReplicas != nil {
+		required = int(*vpa.Spec.UpdatePolicy.MinReplicas)
+		klog.V(3).Infof("overriding minReplicas from global %v to per-VPA %v for VPA %v/%v",
+			f.minReplicas, required, vpa.Namespace, vpa.Name)
+	}
+
 	for creator, replicas := range livePods {
 		actual := len(replicas)
-		if actual < f.minReplicas {
-			klog.V(2).Infof("too few replicas for %v %v/%v. Found %v live pods",
-				creator.Kind, creator.Namespace, creator.Name, actual)
+		if actual < required {
+			klog.V(2).Infof("too few replicas for %v %v/%v. Found %v live pods, needs %v (global %v)",
+				creator.Kind, creator.Namespace, creator.Name, actual, required, f.minReplicas)
 			continue
 		}
 
@@ -314,6 +332,23 @@ func (f *podsEvictionRestrictionFactoryImpl) getReplicaCount(creator podReplicaC
 			return 0, fmt.Errorf("stateful set %s/%s has no replicas config", creator.Namespace, creator.Name)
 		}
 		return int(*ss.Spec.Replicas), nil
+
+	case daemonSet:
+		dsObj, exists, err := f.dsInformer.GetStore().GetByKey(creator.Namespace + "/" + creator.Name)
+		if err != nil {
+			return 0, fmt.Errorf("daemon set %s/%s is not available, err: %v", creator.Namespace, creator.Name, err)
+		}
+		if !exists {
+			return 0, fmt.Errorf("daemon set %s/%s does not exist", creator.Namespace, creator.Name)
+		}
+		ds, ok := dsObj.(*appsv1.DaemonSet)
+		if !ok {
+			return 0, fmt.Errorf("Failed to parse DaemonSet")
+		}
+		if ds.Status.NumberReady == 0 {
+			return 0, fmt.Errorf("daemon set %s/%s has no number ready pods", creator.Namespace, creator.Name)
+		}
+		return int(ds.Status.NumberReady), nil
 	}
 
 	return 0, nil
@@ -341,6 +376,9 @@ func setUpInformer(kubeClient kube_client.Interface, kind controllerKind) (cache
 			resyncPeriod, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc})
 	case statefulSet:
 		informer = appsinformer.NewStatefulSetInformer(kubeClient, apiv1.NamespaceAll,
+			resyncPeriod, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc})
+	case daemonSet:
+		informer = appsinformer.NewDaemonSetInformer(kubeClient, apiv1.NamespaceAll,
 			resyncPeriod, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc})
 	default:
 		return nil, fmt.Errorf("Unknown controller kind: %v", kind)

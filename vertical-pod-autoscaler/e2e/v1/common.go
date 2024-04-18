@@ -22,12 +22,11 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/onsi/ginkgo"
+	ginkgo "github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	autoscaling "k8s.io/api/autoscaling/v1"
 	batchv1 "k8s.io/api/batch/v1"
-	batchv1beta1 "k8s.io/api/batch/v1beta1"
 	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -145,7 +144,7 @@ func NewNHamstersDeployment(f *framework.Framework, n int) *appsv1.Deployment {
 		defaultHamsterReplicas,                     /*replicas*/
 		hamsterLabels,                              /*podLabels*/
 		GetHamsterContainerNameByIndex(0),          /*imageName*/
-		"k8s.gcr.io/ubuntu-slim:0.1",               /*image*/
+		"registry.k8s.io/ubuntu-slim:0.1",          /*image*/
 		appsv1.RollingUpdateDeploymentStrategyType, /*strategyType*/
 	)
 	d.ObjectMeta.Namespace = f.Namespace.Name
@@ -208,20 +207,19 @@ func GetHamsterPods(f *framework.Framework) (*apiv1.PodList, error) {
 }
 
 // NewTestCronJob returns a CronJob for test purposes.
-func NewTestCronJob(name, schedule string) *batchv1beta1.CronJob {
-	replicas := defaultHamsterReplicas
+func NewTestCronJob(name, schedule string, replicas int32) *batchv1.CronJob {
 	backoffLimit := defaultHamsterBackoffLimit
-	sj := &batchv1beta1.CronJob{
+	sj := &batchv1.CronJob{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
 		},
 		TypeMeta: metav1.TypeMeta{
 			Kind: "CronJob",
 		},
-		Spec: batchv1beta1.CronJobSpec{
+		Spec: batchv1.CronJobSpec{
 			Schedule:          schedule,
-			ConcurrencyPolicy: batchv1beta1.AllowConcurrent,
-			JobTemplate: batchv1beta1.JobTemplateSpec{
+			ConcurrencyPolicy: batchv1.AllowConcurrent,
+			JobTemplate: batchv1.JobTemplateSpec{
 				Spec: batchv1.JobSpec{
 					Parallelism:  &replicas,
 					Completions:  &replicas,
@@ -252,17 +250,17 @@ func waitForActiveJobs(c clientset.Interface, ns, cronJobName string, active int
 	})
 }
 
-func createCronJob(c clientset.Interface, ns string, cronJob *batchv1beta1.CronJob) (*batchv1beta1.CronJob, error) {
-	return c.BatchV1beta1().CronJobs(ns).Create(context.TODO(), cronJob, metav1.CreateOptions{})
+func createCronJob(c clientset.Interface, ns string, cronJob *batchv1.CronJob) (*batchv1.CronJob, error) {
+	return c.BatchV1().CronJobs(ns).Create(context.TODO(), cronJob, metav1.CreateOptions{})
 }
 
-func getCronJob(c clientset.Interface, ns, name string) (*batchv1beta1.CronJob, error) {
-	return c.BatchV1beta1().CronJobs(ns).Get(context.TODO(), name, metav1.GetOptions{})
+func getCronJob(c clientset.Interface, ns, name string) (*batchv1.CronJob, error) {
+	return c.BatchV1().CronJobs(ns).Get(context.TODO(), name, metav1.GetOptions{})
 }
 
 // SetupHamsterCronJob creates and sets up a new CronJob
 func SetupHamsterCronJob(f *framework.Framework, schedule, cpu, memory string, replicas int32) {
-	cronJob := NewTestCronJob("hamster-cronjob", schedule)
+	cronJob := NewTestCronJob("hamster-cronjob", schedule, replicas)
 	cronJob.Spec.JobTemplate.Spec.Template.Spec.Containers = []apiv1.Container{SetupHamsterContainer(cpu, memory)}
 	for label, value := range hamsterLabels {
 		cronJob.Spec.JobTemplate.Spec.Template.Labels[label] = value
@@ -280,7 +278,7 @@ func SetupHamsterContainer(cpu, memory string) apiv1.Container {
 
 	return apiv1.Container{
 		Name:  "hamster",
-		Image: "k8s.gcr.io/ubuntu-slim:0.1",
+		Image: "registry.k8s.io/ubuntu-slim:0.1",
 		Resources: apiv1.ResourceRequirements{
 			Requests: apiv1.ResourceList{
 				apiv1.ResourceCPU:    cpuQuantity,
@@ -290,58 +288,6 @@ func SetupHamsterContainer(cpu, memory string) apiv1.Container {
 		Command: []string{"/bin/sh"},
 		Args:    []string{"-c", "while true; do sleep 10 ; done"},
 	}
-}
-
-// SetupVPA creates and installs a simple hamster VPA for e2e test purposes.
-func SetupVPA(f *framework.Framework, cpu string, mode vpa_types.UpdateMode, targetRef *autoscaling.CrossVersionObjectReference) {
-	SetupVPAForNHamsters(f, 1, cpu, mode, targetRef)
-}
-
-// SetupVPAForNHamsters creates and installs a simple pod with n hamster containers for e2e test purposes.
-func SetupVPAForNHamsters(f *framework.Framework, n int, cpu string, mode vpa_types.UpdateMode, targetRef *autoscaling.CrossVersionObjectReference) {
-	vpaCRD := NewVPA(f, "hamster-vpa", targetRef)
-	vpaCRD.Spec.UpdatePolicy.UpdateMode = &mode
-
-	cpuQuantity := ParseQuantityOrDie(cpu)
-	resourceList := apiv1.ResourceList{apiv1.ResourceCPU: cpuQuantity}
-
-	containerRecommendations := []vpa_types.RecommendedContainerResources{}
-	for i := 0; i < n; i++ {
-		containerRecommendations = append(containerRecommendations,
-			vpa_types.RecommendedContainerResources{
-				ContainerName: GetHamsterContainerNameByIndex(i),
-				Target:        resourceList,
-				LowerBound:    resourceList,
-				UpperBound:    resourceList,
-			},
-		)
-	}
-	vpaCRD.Status.Recommendation = &vpa_types.RecommendedPodResources{
-		ContainerRecommendations: containerRecommendations,
-	}
-
-	InstallVPA(f, vpaCRD)
-}
-
-// NewVPA creates a VPA object for e2e test purposes.
-func NewVPA(f *framework.Framework, name string, targetRef *autoscaling.CrossVersionObjectReference) *vpa_types.VerticalPodAutoscaler {
-	updateMode := vpa_types.UpdateModeAuto
-	vpa := vpa_types.VerticalPodAutoscaler{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: f.Namespace.Name,
-		},
-		Spec: vpa_types.VerticalPodAutoscalerSpec{
-			TargetRef: targetRef,
-			UpdatePolicy: &vpa_types.PodUpdatePolicy{
-				UpdateMode: &updateMode,
-			},
-			ResourcePolicy: &vpa_types.PodResourcePolicy{
-				ContainerPolicies: []vpa_types.ContainerResourcePolicy{},
-			},
-		},
-	}
-	return &vpa
 }
 
 type patchRecord struct {
@@ -361,6 +307,23 @@ func InstallVPA(f *framework.Framework, vpa *vpa_types.VerticalPodAutoscaler) {
 	vpaClientSet := getVpaClientSet(f)
 	_, err := vpaClientSet.AutoscalingV1().VerticalPodAutoscalers(f.Namespace.Name).Create(context.TODO(), vpa, metav1.CreateOptions{})
 	gomega.Expect(err).NotTo(gomega.HaveOccurred(), "unexpected error creating VPA")
+	// apiserver ignore status in vpa create, so need to update status
+	if !isStatusEmpty(&vpa.Status) {
+		if vpa.Status.Recommendation != nil {
+			PatchVpaRecommendation(f, vpa, vpa.Status.Recommendation)
+		}
+	}
+}
+
+func isStatusEmpty(status *vpa_types.VerticalPodAutoscalerStatus) bool {
+	if status == nil {
+		return true
+	}
+
+	if len(status.Conditions) == 0 && status.Recommendation == nil {
+		return true
+	}
+	return false
 }
 
 // InstallRawVPA installs a VPA object passed in as raw json in the test cluster.
@@ -374,7 +337,7 @@ func InstallRawVPA(f *framework.Framework, obj interface{}) error {
 	return err.Error()
 }
 
-// PatchVpaRecommendation installs a new reocmmendation for VPA object.
+// PatchVpaRecommendation installs a new recommendation for VPA object.
 func PatchVpaRecommendation(f *framework.Framework, vpa *vpa_types.VerticalPodAutoscaler,
 	recommendation *vpa_types.RecommendedPodResources) {
 	newStatus := vpa.Status.DeepCopy()
@@ -385,7 +348,7 @@ func PatchVpaRecommendation(f *framework.Framework, vpa *vpa_types.VerticalPodAu
 		Value: *newStatus,
 	}})
 	gomega.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = getVpaClientSet(f).AutoscalingV1().VerticalPodAutoscalers(f.Namespace.Name).Patch(context.TODO(), vpa.Name, types.JSONPatchType, bytes, metav1.PatchOptions{})
+	_, err = getVpaClientSet(f).AutoscalingV1().VerticalPodAutoscalers(f.Namespace.Name).Patch(context.TODO(), vpa.Name, types.JSONPatchType, bytes, metav1.PatchOptions{}, "status")
 	gomega.Expect(err).NotTo(gomega.HaveOccurred(), "Failed to patch VPA.")
 }
 

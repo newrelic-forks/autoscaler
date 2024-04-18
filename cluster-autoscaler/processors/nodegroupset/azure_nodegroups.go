@@ -17,27 +17,42 @@ limitations under the License.
 package nodegroupset
 
 import (
+	"k8s.io/autoscaler/cluster-autoscaler/config"
 	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework"
 )
 
-// AzureNodepoolLabel is a label specifying which Azure node pool a particular node belongs to.
-const AzureNodepoolLabel = "agentpool"
+// AzureNodepoolLegacyLabel is a label specifying which Azure node pool a particular node belongs to.
+const AzureNodepoolLegacyLabel = "agentpool"
+
+// AzureNodepoolLabel is an AKS label specifying which nodepool a particular node belongs to
+const AzureNodepoolLabel = "kubernetes.azure.com/agentpool"
+
+// AzureDiskTopologyKey is the topology key of Azure Disk CSI driver
+const AzureDiskTopologyKey = "topology.disk.csi.azure.com/zone"
 
 func nodesFromSameAzureNodePool(n1, n2 *schedulerframework.NodeInfo) bool {
 	n1AzureNodePool := n1.Node().Labels[AzureNodepoolLabel]
 	n2AzureNodePool := n2.Node().Labels[AzureNodepoolLabel]
+	return (n1AzureNodePool != "" && n1AzureNodePool == n2AzureNodePool) || nodesFromSameAzureNodePoolLegacy(n1, n2)
+}
+
+func nodesFromSameAzureNodePoolLegacy(n1, n2 *schedulerframework.NodeInfo) bool {
+	n1AzureNodePool := n1.Node().Labels[AzureNodepoolLegacyLabel]
+	n2AzureNodePool := n2.Node().Labels[AzureNodepoolLegacyLabel]
 	return n1AzureNodePool != "" && n1AzureNodePool == n2AzureNodePool
 }
 
 // CreateAzureNodeInfoComparator returns a comparator that checks if two nodes should be considered
 // part of the same NodeGroupSet. This is true if they either belong to the same Azure agentpool
 // or match usual conditions checked by IsCloudProviderNodeInfoSimilar, even if they have different agentpool labels.
-func CreateAzureNodeInfoComparator(extraIgnoredLabels []string) NodeInfoComparator {
+func CreateAzureNodeInfoComparator(extraIgnoredLabels []string, ratioOpts config.NodeGroupDifferenceRatios) NodeInfoComparator {
 	azureIgnoredLabels := make(map[string]bool)
 	for k, v := range BasicIgnoredLabels {
 		azureIgnoredLabels[k] = v
 	}
+	azureIgnoredLabels[AzureNodepoolLegacyLabel] = true
 	azureIgnoredLabels[AzureNodepoolLabel] = true
+	azureIgnoredLabels[AzureDiskTopologyKey] = true
 	for _, k := range extraIgnoredLabels {
 		azureIgnoredLabels[k] = true
 	}
@@ -46,6 +61,6 @@ func CreateAzureNodeInfoComparator(extraIgnoredLabels []string) NodeInfoComparat
 		if nodesFromSameAzureNodePool(n1, n2) {
 			return true
 		}
-		return IsCloudProviderNodeInfoSimilar(n1, n2, azureIgnoredLabels)
+		return IsCloudProviderNodeInfoSimilar(n1, n2, azureIgnoredLabels, ratioOpts)
 	}
 }

@@ -1,14 +1,17 @@
 approvers:
-- frobware
 - enxebre
 - elmiko
 - hardikdr
 - detiber
-- ncdc
 reviewers:
-- frobware
 - enxebre
 - elmiko
 - hardikdr
 - detiber
-- ncdc
+- jackfrancis
+- mrajashree
+- arunmk
+- shysank
+
+labels:
+- area/provider/cluster-api
