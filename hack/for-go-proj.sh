@@ -45,6 +45,8 @@ for project_name in ${PROJECT_NAMES[*]}; do
   (
     if [[ $project_name == cluster-autoscaler ]];then
       export GO111MODULE=off
+    else
+      export GO111MODULE=auto
     fi
 
     project=${CONTRIB_ROOT}/${project_name}
@@ -55,7 +57,7 @@ for project_name in ${PROJECT_NAMES[*]}; do
         if [[ -n $(find . -name "Godeps.json") ]]; then
           godep go test -race $(go list ./... | grep -v /vendor/ | grep -v vertical-pod-autoscaler/e2e)
         else
-          go test -race $(go list ./... | grep -v /vendor/ | grep -v vertical-pod-autoscaler/e2e)
+          go test -race $(go list ./... | grep -v /vendor/ | grep -v vertical-pod-autoscaler/e2e | grep -v cluster-autoscaler/apis)
         fi
         ;;
       *)

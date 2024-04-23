@@ -1,19 +1,3 @@
-/*
-Copyright 2018 The Kubernetes Authors.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
-
 package hcloud
 
 import (
@@ -31,7 +15,7 @@ import (
 
 // Volume represents a volume in the Hetzner Cloud.
 type Volume struct {
-	ID          int
+	ID          int64
 	Name        string
 	Status      VolumeStatus
 	Server      *Server
@@ -51,6 +35,7 @@ type VolumeProtection struct {
 // VolumeClient is a client for the volume API.
 type VolumeClient struct {
 	client *Client
+	Action *ResourceActionClient
 }
 
 // VolumeStatus specifies a volume's status.
@@ -65,7 +50,7 @@ const (
 )
 
 // GetByID retrieves a volume by its ID. If the volume does not exist, nil is returned.
-func (c *VolumeClient) GetByID(ctx context.Context, id int) (*Volume, *Response, error) {
+func (c *VolumeClient) GetByID(ctx context.Context, id int64) (*Volume, *Response, error) {
 	req, err := c.client.NewRequest(ctx, "GET", fmt.Sprintf("/volumes/%d", id), nil)
 	if err != nil {
 		return nil, nil, err
@@ -97,8 +82,8 @@ func (c *VolumeClient) GetByName(ctx context.Context, name string) (*Volume, *Re
 // Get retrieves a volume by its ID if the input can be parsed as an integer, otherwise it
 // retrieves a volume by its name. If the volume does not exist, nil is returned.
 func (c *VolumeClient) Get(ctx context.Context, idOrName string) (*Volume, *Response, error) {
-	if id, err := strconv.Atoi(idOrName); err == nil {
-		return c.GetByID(ctx, int(id))
+	if id, err := strconv.ParseInt(idOrName, 10, 64); err == nil {
+		return c.GetByID(ctx, id)
 	}
 	return c.GetByName(ctx, idOrName)
 }
@@ -108,15 +93,19 @@ type VolumeListOpts struct {
 	ListOpts
 	Name   string
 	Status []VolumeStatus
+	Sort   []string
 }
 
 func (l VolumeListOpts) values() url.Values {
-	vals := l.ListOpts.values()
+	vals := l.ListOpts.Values()
 	if l.Name != "" {
 		vals.Add("name", l.Name)
 	}
 	for _, status := range l.Status {
 		vals.Add("status", string(status))
+	}
+	for _, sort := range l.Sort {
+		vals.Add("sort", sort)
 	}
 	return vals
 }
@@ -153,7 +142,7 @@ func (c *VolumeClient) All(ctx context.Context) ([]*Volume, error) {
 func (c *VolumeClient) AllWithOpts(ctx context.Context, opts VolumeListOpts) ([]*Volume, error) {
 	allVolumes := []*Volume{}
 
-	_, err := c.client.all(func(page int) (*Response, error) {
+	err := c.client.all(func(page int) (*Response, error) {
 		opts.Page = page
 		volumes, resp, err := c.List(ctx, opts)
 		if err != nil {
@@ -222,7 +211,7 @@ func (c *VolumeClient) Create(ctx context.Context, opts VolumeCreateOpts) (Volum
 		reqBody.Labels = &opts.Labels
 	}
 	if opts.Server != nil {
-		reqBody.Server = Int(opts.Server.ID)
+		reqBody.Server = Ptr(opts.Server.ID)
 	}
 	if opts.Location != nil {
 		if opts.Location.ID != 0 {

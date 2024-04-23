@@ -233,6 +233,7 @@ func (a *AggregateContainerState) SaveToCheckpoint() (*vpa_types.VerticalPodAuto
 		return nil, err
 	}
 	return &vpa_types.VerticalPodAutoscalerCheckpointStatus{
+		LastUpdateTime:    metav1.NewTime(time.Now()),
 		FirstSampleStart:  metav1.NewTime(a.FirstSampleStart),
 		LastSampleStart:   metav1.NewTime(a.LastSampleStart),
 		TotalSamplesCount: a.TotalSamplesCount,
@@ -246,7 +247,7 @@ func (a *AggregateContainerState) SaveToCheckpoint() (*vpa_types.VerticalPodAuto
 // into the AggregateContainerState.
 func (a *AggregateContainerState) LoadFromCheckpoint(checkpoint *vpa_types.VerticalPodAutoscalerCheckpointStatus) error {
 	if checkpoint.Version != SupportedCheckpointVersion {
-		return fmt.Errorf("unsuported checkpoint version %s", checkpoint.Version)
+		return fmt.Errorf("unsupported checkpoint version %s", checkpoint.Version)
 	}
 	a.TotalSamplesCount = checkpoint.TotalSamplesCount
 	a.FirstSampleStart = checkpoint.FirstSampleStart.Time

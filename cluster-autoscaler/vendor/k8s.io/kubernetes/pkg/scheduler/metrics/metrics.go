@@ -22,19 +22,38 @@ import (
 
 	"k8s.io/component-base/metrics"
 	"k8s.io/component-base/metrics/legacyregistry"
-	volumeschedulingmetrics "k8s.io/kubernetes/pkg/controller/volume/scheduling/metrics"
+	volumebindingmetrics "k8s.io/kubernetes/pkg/scheduler/framework/plugins/volumebinding/metrics"
 )
 
 const (
-	// SchedulerSubsystem - subsystem name used by scheduler
+	// SchedulerSubsystem - subsystem name used by scheduler.
 	SchedulerSubsystem = "scheduler"
-	// Below are possible values for the operation label. Each represents a substep of e2e scheduling:
+)
 
-	// PrioritizingExtender - prioritizing extender operation label value
+// Below are possible values for the work and operation label.
+const (
+	// PrioritizingExtender - prioritizing extender work/operation label value.
 	PrioritizingExtender = "prioritizing_extender"
-	// Binding - binding operation label value
+	// Binding - binding work/operation label value.
 	Binding = "binding"
-	// E2eScheduling - e2e scheduling operation label value
+)
+
+// Below are possible values for the extension_point label.
+const (
+	PreFilter                   = "PreFilter"
+	Filter                      = "Filter"
+	PreFilterExtensionAddPod    = "PreFilterExtensionAddPod"
+	PreFilterExtensionRemovePod = "PreFilterExtensionRemovePod"
+	PostFilter                  = "PostFilter"
+	PreScore                    = "PreScore"
+	Score                       = "Score"
+	ScoreExtensionNormalize     = "ScoreExtensionNormalize"
+	PreBind                     = "PreBind"
+	Bind                        = "Bind"
+	PostBind                    = "PostBind"
+	Reserve                     = "Reserve"
+	Unreserve                   = "Unreserve"
+	Permit                      = "Permit"
 )
 
 // All the histogram based metrics have 1ms as size for the smallest bucket.
@@ -44,16 +63,16 @@ var (
 			Subsystem:      SchedulerSubsystem,
 			Name:           "schedule_attempts_total",
 			Help:           "Number of attempts to schedule pods, by the result. 'unschedulable' means a pod could not be scheduled, while 'error' means an internal scheduler problem.",
-			StabilityLevel: metrics.ALPHA,
+			StabilityLevel: metrics.STABLE,
 		}, []string{"result", "profile"})
 
-	e2eSchedulingLatency = metrics.NewHistogramVec(
+	schedulingLatency = metrics.NewHistogramVec(
 		&metrics.HistogramOpts{
 			Subsystem:      SchedulerSubsystem,
-			Name:           "e2e_scheduling_duration_seconds",
-			Help:           "E2e scheduling latency in seconds (scheduling algorithm + binding)",
+			Name:           "scheduling_attempt_duration_seconds",
+			Help:           "Scheduling attempt latency in seconds (scheduling algorithm + binding)",
 			Buckets:        metrics.ExponentialBuckets(0.001, 2, 15),
-			StabilityLevel: metrics.ALPHA,
+			StabilityLevel: metrics.STABLE,
 		}, []string{"result", "profile"})
 	SchedulingAlgorithmLatency = metrics.NewHistogram(
 		&metrics.HistogramOpts{
@@ -69,40 +88,54 @@ var (
 			Subsystem: SchedulerSubsystem,
 			Name:      "preemption_victims",
 			Help:      "Number of selected preemption victims",
-			// we think #victims>50 is pretty rare, therefore [50, +Inf) is considered a single bucket.
-			Buckets:        metrics.LinearBuckets(5, 5, 10),
-			StabilityLevel: metrics.ALPHA,
+			// we think #victims>64 is pretty rare, therefore [64, +Inf) is considered a single bucket.
+			Buckets:        metrics.ExponentialBuckets(1, 2, 7),
+			StabilityLevel: metrics.STABLE,
 		})
 	PreemptionAttempts = metrics.NewCounter(
 		&metrics.CounterOpts{
 			Subsystem:      SchedulerSubsystem,
 			Name:           "preemption_attempts_total",
 			Help:           "Total preemption attempts in the cluster till now",
-			StabilityLevel: metrics.ALPHA,
+			StabilityLevel: metrics.STABLE,
 		})
 	pendingPods = metrics.NewGaugeVec(
 		&metrics.GaugeOpts{
 			Subsystem:      SchedulerSubsystem,
 			Name:           "pending_pods",
-			Help:           "Number of pending pods, by the queue type. 'active' means number of pods in activeQ; 'backoff' means number of pods in backoffQ; 'unschedulable' means number of pods in unschedulableQ.",
-			StabilityLevel: metrics.ALPHA,
+			Help:           "Number of pending pods, by the queue type. 'active' means number of pods in activeQ; 'backoff' means number of pods in backoffQ; 'unschedulable' means number of pods in unschedulablePods that the scheduler attempted to schedule and failed; 'gated' is the number of unschedulable pods that the scheduler never attempted to schedule because they are gated.",
+			StabilityLevel: metrics.STABLE,
 		}, []string{"queue"})
-	SchedulerGoroutines = metrics.NewGaugeVec(
+	Goroutines = metrics.NewGaugeVec(
 		&metrics.GaugeOpts{
 			Subsystem:      SchedulerSubsystem,
-			Name:           "scheduler_goroutines",
+			Name:           "goroutines",
 			Help:           "Number of running goroutines split by the work they do such as binding.",
 			StabilityLevel: metrics.ALPHA,
-		}, []string{"work"})
+		}, []string{"operation"})
 
+	// PodSchedulingDuration is deprecated as of Kubernetes v1.28, and will be removed
+	// in v1.31. Please use PodSchedulingSLIDuration instead.
 	PodSchedulingDuration = metrics.NewHistogramVec(
 		&metrics.HistogramOpts{
 			Subsystem: SchedulerSubsystem,
 			Name:      "pod_scheduling_duration_seconds",
 			Help:      "E2e latency for a pod being scheduled which may include multiple scheduling attempts.",
 			// Start with 10ms with the last bucket being [~88m, Inf).
+			Buckets:           metrics.ExponentialBuckets(0.01, 2, 20),
+			StabilityLevel:    metrics.STABLE,
+			DeprecatedVersion: "1.29.0",
+		},
+		[]string{"attempts"})
+
+	PodSchedulingSLIDuration = metrics.NewHistogramVec(
+		&metrics.HistogramOpts{
+			Subsystem: SchedulerSubsystem,
+			Name:      "pod_scheduling_sli_duration_seconds",
+			Help:      "E2e latency for a pod being scheduled, from the time the pod enters the scheduling queue an d might involve multiple scheduling attempts.",
+			// Start with 10ms with the last bucket being [~88m, Inf).
 			Buckets:        metrics.ExponentialBuckets(0.01, 2, 20),
-			StabilityLevel: metrics.ALPHA,
+			StabilityLevel: metrics.BETA,
 		},
 		[]string{"attempts"})
 
@@ -112,7 +145,7 @@ var (
 			Name:           "pod_scheduling_attempts",
 			Help:           "Number of attempts to successfully schedule a pod.",
 			Buckets:        metrics.ExponentialBuckets(1, 2, 5),
-			StabilityLevel: metrics.ALPHA,
+			StabilityLevel: metrics.STABLE,
 		})
 
 	FrameworkExtensionPointDuration = metrics.NewHistogramVec(
@@ -122,7 +155,7 @@ var (
 			Help:      "Latency for running all plugins of a specific extension point.",
 			// Start with 0.1ms with the last bucket being [~200ms, Inf)
 			Buckets:        metrics.ExponentialBuckets(0.0001, 2, 12),
-			StabilityLevel: metrics.ALPHA,
+			StabilityLevel: metrics.STABLE,
 		},
 		[]string{"extension_point", "status", "profile"})
 
@@ -143,7 +176,7 @@ var (
 			Subsystem:      SchedulerSubsystem,
 			Name:           "queue_incoming_pods_total",
 			Help:           "Number of pods added to scheduling queues by event and queue type.",
-			StabilityLevel: metrics.ALPHA,
+			StabilityLevel: metrics.STABLE,
 		}, []string{"queue", "event"})
 
 	PermitWaitDuration = metrics.NewHistogramVec(
@@ -164,21 +197,40 @@ var (
 			StabilityLevel: metrics.ALPHA,
 		}, []string{"type"})
 
+	unschedulableReasons = metrics.NewGaugeVec(
+		&metrics.GaugeOpts{
+			Subsystem:      SchedulerSubsystem,
+			Name:           "unschedulable_pods",
+			Help:           "The number of unschedulable pods broken down by plugin name. A pod will increment the gauge for all plugins that caused it to not schedule and so this metric have meaning only when broken down by plugin.",
+			StabilityLevel: metrics.ALPHA,
+		}, []string{"plugin", "profile"})
+
+	PluginEvaluationTotal = metrics.NewCounterVec(
+		&metrics.CounterOpts{
+			Subsystem:      SchedulerSubsystem,
+			Name:           "plugin_evaluation_total",
+			Help:           "Number of attempts to schedule pods by each plugin and the extension point (available only in PreFilter, Filter, PreScore, and Score).",
+			StabilityLevel: metrics.ALPHA,
+		}, []string{"plugin", "extension_point", "profile"})
+
 	metricsList = []metrics.Registerable{
 		scheduleAttempts,
-		e2eSchedulingLatency,
+		schedulingLatency,
 		SchedulingAlgorithmLatency,
 		PreemptionVictims,
 		PreemptionAttempts,
 		pendingPods,
 		PodSchedulingDuration,
+		PodSchedulingSLIDuration,
 		PodSchedulingAttempts,
 		FrameworkExtensionPointDuration,
 		PluginExecutionDuration,
 		SchedulerQueueIncomingPods,
-		SchedulerGoroutines,
+		Goroutines,
 		PermitWaitDuration,
 		CacheSize,
+		unschedulableReasons,
+		PluginEvaluationTotal,
 	}
 )
 
@@ -189,7 +241,7 @@ func Register() {
 	// Register the metrics.
 	registerMetrics.Do(func() {
 		RegisterMetrics(metricsList...)
-		volumeschedulingmetrics.RegisterVolumeSchedulingMetrics()
+		volumebindingmetrics.RegisterVolumeSchedulingMetrics()
 	})
 }
 
@@ -221,7 +273,16 @@ func UnschedulablePods() metrics.GaugeMetric {
 	return pendingPods.With(metrics.Labels{"queue": "unschedulable"})
 }
 
+// GatedPods returns the pending pods metrics with the label gated
+func GatedPods() metrics.GaugeMetric {
+	return pendingPods.With(metrics.Labels{"queue": "gated"})
+}
+
 // SinceInSeconds gets the time since the specified start in seconds.
 func SinceInSeconds(start time.Time) float64 {
 	return time.Since(start).Seconds()
+}
+
+func UnschedulableReason(plugin string, profile string) metrics.GaugeMetric {
+	return unschedulableReasons.With(metrics.Labels{"plugin": plugin, "profile": profile})
 }

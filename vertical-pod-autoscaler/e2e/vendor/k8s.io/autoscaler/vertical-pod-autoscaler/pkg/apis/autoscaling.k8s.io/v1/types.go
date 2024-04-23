@@ -38,23 +38,36 @@ type VerticalPodAutoscalerList struct {
 
 // +genclient
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+// +kubebuilder:storageversion
+// +kubebuilder:resource:shortName=vpa
+// +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="Mode",type="string",JSONPath=".spec.updatePolicy.updateMode"
+// +kubebuilder:printcolumn:name="CPU",type="string",JSONPath=".status.recommendation.containerRecommendations[0].target.cpu"
+// +kubebuilder:printcolumn:name="Mem",type="string",JSONPath=".status.recommendation.containerRecommendations[0].target.memory"
+// +kubebuilder:printcolumn:name="Provided",type="string",JSONPath=".status.conditions[?(@.type=='RecommendationProvided')].status"
+// +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // VerticalPodAutoscaler is the configuration for a vertical pod
 // autoscaler, which automatically manages pod resources based on historical and
 // real time resource utilization.
 type VerticalPodAutoscaler struct {
-	metav1.TypeMeta `json:",inline"`
-	// Standard object metadata. More info: https://git.k8s.io/community/contributors/devel/api-conventions.md#metadata
-	// +optional
+	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty" protobuf:"bytes,1,opt,name=metadata"`
 
 	// Specification of the behavior of the autoscaler.
-	// More info: https://git.k8s.io/community/contributors/devel/api-conventions.md#spec-and-status.
+	// More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#spec-and-status.
 	Spec VerticalPodAutoscalerSpec `json:"spec" protobuf:"bytes,2,name=spec"`
 
 	// Current information about the autoscaler.
 	// +optional
 	Status VerticalPodAutoscalerStatus `json:"status,omitempty" protobuf:"bytes,3,opt,name=status"`
+}
+
+// VerticalPodAutoscalerRecommenderSelector points to a specific Vertical Pod Autoscaler recommender.
+// In the future it might pass parameters to the recommender.
+type VerticalPodAutoscalerRecommenderSelector struct {
+	// Name of the recommender responsible for generating recommendation for this object.
+	Name string `json:"name" protobuf:"bytes,1,opt,name=name"`
 }
 
 // VerticalPodAutoscalerSpec is the specification of the behavior of the autoscaler.
@@ -81,10 +94,40 @@ type VerticalPodAutoscalerSpec struct {
 
 	// Controls how the autoscaler computes recommended resources.
 	// The resource policy may be used to set constraints on the recommendations
-	// for individual containers. If not specified, the autoscaler computes recommended
-	// resources for all containers in the pod, without additional constraints.
+	// for individual containers.
+	// If any individual containers need to be excluded from getting the VPA recommendations, then
+	// it must be disabled explicitly by setting mode to "Off" under containerPolicies.
+	// If not specified, the autoscaler computes recommended resources for all containers in the pod,
+	// without additional constraints.
 	// +optional
 	ResourcePolicy *PodResourcePolicy `json:"resourcePolicy,omitempty" protobuf:"bytes,3,opt,name=resourcePolicy"`
+
+	// Recommender responsible for generating recommendation for this object.
+	// List should be empty (then the default recommender will generate the
+	// recommendation) or contain exactly one recommender.
+	// +optional
+	Recommenders []*VerticalPodAutoscalerRecommenderSelector `json:"recommenders,omitempty" protobuf:"bytes,4,opt,name=recommenders"`
+}
+
+// EvictionChangeRequirement refers to the relationship between the new target recommendation for a Pod and its current requests, what kind of change is necessary for the Pod to be evicted
+// +kubebuilder:validation:Enum:=TargetHigherThanRequests;TargetLowerThanRequests
+type EvictionChangeRequirement string
+
+const (
+	// TargetHigherThanRequests means the new target recommendation for a Pod is higher than its current requests, i.e. the Pod is scaled up
+	TargetHigherThanRequests EvictionChangeRequirement = "TargetHigherThanRequests"
+	// TargetLowerThanRequests means the new target recommendation for a Pod is lower than its current requests, i.e. the Pod is scaled down
+	TargetLowerThanRequests EvictionChangeRequirement = "TargetLowerThanRequests"
+)
+
+// EvictionRequirement defines a single condition which needs to be true in
+// order to evict a Pod
+type EvictionRequirement struct {
+	// Resources is a list of one or more resources that the condition applies
+	// to. If more than one resource is given, the EvictionRequirement is fulfilled
+	// if at least one resource meets `changeRequirement`.
+	Resources         []v1.ResourceName         `json:"resources" protobuf:"bytes,1,name=resources"`
+	ChangeRequirement EvictionChangeRequirement `json:"changeRequirement" protobuf:"bytes,2,name=changeRequirement"`
 }
 
 // PodUpdatePolicy describes the rules on how changes are applied to the pods.
@@ -93,9 +136,22 @@ type PodUpdatePolicy struct {
 	// The default is 'Auto'.
 	// +optional
 	UpdateMode *UpdateMode `json:"updateMode,omitempty" protobuf:"bytes,1,opt,name=updateMode"`
+
+	// Minimal number of replicas which need to be alive for Updater to attempt
+	// pod eviction (pending other checks like PDB). Only positive values are
+	// allowed. Overrides global '--min-replicas' flag.
+	// +optional
+	MinReplicas *int32 `json:"minReplicas,omitempty" protobuf:"varint,2,opt,name=minReplicas"`
+
+	// EvictionRequirements is a list of EvictionRequirements that need to
+	// evaluate to true in order for a Pod to be evicted. If more than one
+	// EvictionRequirement is specified, all of them need to be fulfilled to allow eviction.
+	// +optional
+	EvictionRequirements []*EvictionRequirement `json:"evictionRequirements,omitempty" protobuf:"bytes,3,opt,name=evictionRequirements"`
 }
 
-// UpdateMode controls when autoscaler applies changes to the pod resoures.
+// UpdateMode controls when autoscaler applies changes to the pod resources.
+// +kubebuilder:validation:Enum=Off;Initial;Recreate;Auto
 type UpdateMode string
 
 const (
@@ -167,6 +223,7 @@ const (
 
 // ContainerScalingMode controls whether autoscaler is enabled for a specific
 // container.
+// +kubebuilder:validation:Enum=Auto;Off
 type ContainerScalingMode string
 
 const (
@@ -177,6 +234,7 @@ const (
 )
 
 // ContainerControlledValues controls which resource value should be autoscaled.
+// +kubebuilder:validation:Enum=RequestsAndLimits;RequestsOnly
 type ContainerControlledValues string
 
 const (
@@ -286,17 +344,17 @@ type VerticalPodAutoscalerCondition struct {
 // +genclient
 // +genclient:noStatus
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+// +kubebuilder:storageversion
+// +kubebuilder:resource:shortName=vpacheckpoint
 
 // VerticalPodAutoscalerCheckpoint is the checkpoint of the internal state of VPA that
 // is used for recovery after recommender's restart.
 type VerticalPodAutoscalerCheckpoint struct {
-	metav1.TypeMeta `json:",inline"`
-	// Standard object metadata. More info: https://git.k8s.io/community/contributors/devel/api-conventions.md#metadata
-	// +optional
+	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty" protobuf:"bytes,1,opt,name=metadata"`
 
 	// Specification of the checkpoint.
-	// More info: https://git.k8s.io/community/contributors/devel/api-conventions.md#spec-and-status.
+	// More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#spec-and-status.
 	// +optional
 	Spec VerticalPodAutoscalerCheckpointSpec `json:"spec,omitempty" protobuf:"bytes,2,opt,name=spec"`
 
@@ -326,6 +384,7 @@ type VerticalPodAutoscalerCheckpointSpec struct {
 // VerticalPodAutoscalerCheckpointStatus contains data of the checkpoint.
 type VerticalPodAutoscalerCheckpointStatus struct {
 	// The time when the status was last refreshed.
+	// +nullable
 	LastUpdateTime metav1.Time `json:"lastUpdateTime,omitempty" protobuf:"bytes,1,opt,name=lastUpdateTime"`
 
 	// Version of the format of the stored data.
@@ -338,9 +397,11 @@ type VerticalPodAutoscalerCheckpointStatus struct {
 	MemoryHistogram HistogramCheckpoint `json:"memoryHistogram,omitempty" protobuf:"bytes,4,rep,name=memoryHistogram"`
 
 	// Timestamp of the fist sample from the histograms.
+	// +nullable
 	FirstSampleStart metav1.Time `json:"firstSampleStart,omitempty" protobuf:"bytes,5,opt,name=firstSampleStart"`
 
 	// Timestamp of the last sample from the histograms.
+	// +nullable
 	LastSampleStart metav1.Time `json:"lastSampleStart,omitempty" protobuf:"bytes,6,opt,name=lastSampleStart"`
 
 	// Total number of samples in the histograms.
@@ -350,9 +411,12 @@ type VerticalPodAutoscalerCheckpointStatus struct {
 // HistogramCheckpoint contains data needed to reconstruct the histogram.
 type HistogramCheckpoint struct {
 	// Reference timestamp for samples collected within this histogram.
+	// +nullable
 	ReferenceTimestamp metav1.Time `json:"referenceTimestamp,omitempty" protobuf:"bytes,1,opt,name=referenceTimestamp"`
 
 	// Map from bucket index to bucket weight.
+	// +kubebuilder:validation:Type=object
+	// +kubebuilder:validation:XPreserveUnknownFields
 	BucketWeights map[int]uint32 `json:"bucketWeights,omitempty" protobuf:"bytes,2,opt,name=bucketWeights"`
 
 	// Sum of samples to be used as denominator for weights from BucketWeights.

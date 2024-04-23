@@ -38,18 +38,23 @@ type VerticalPodAutoscalerList struct {
 
 // +genclient
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+// +kubebuilder:resource:shortName=vpa
+// +kubebuilder:subresource:status
+// +k8s:prerelease-lifecycle-gen=true
 
 // VerticalPodAutoscaler is the configuration for a vertical pod
 // autoscaler, which automatically manages pod resources based on historical and
 // real time resource utilization.
+// +k8s:prerelease-lifecycle-gen:introduced=0.4.0
+// +k8s:prerelease-lifecycle-gen:deprecated=0.13.0
+// +k8s:prerelease-lifecycle-gen:replacement=autoscaling,v1,VerticalPodAutoscaler
+// +kubebuilder:deprecatedversion:warning=autoscaling.k8s.io/v1beta2 API is deprecated
 type VerticalPodAutoscaler struct {
-	metav1.TypeMeta `json:",inline"`
-	// Standard object metadata. More info: https://git.k8s.io/community/contributors/devel/api-conventions.md#metadata
-	// +optional
+	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty" protobuf:"bytes,1,opt,name=metadata"`
 
 	// Specification of the behavior of the autoscaler.
-	// More info: https://git.k8s.io/community/contributors/devel/api-conventions.md#spec-and-status.
+	// More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#spec-and-status.
 	Spec VerticalPodAutoscalerSpec `json:"spec" protobuf:"bytes,2,name=spec"`
 
 	// Current information about the autoscaler.
@@ -95,7 +100,8 @@ type PodUpdatePolicy struct {
 	UpdateMode *UpdateMode `json:"updateMode,omitempty" protobuf:"bytes,1,opt,name=updateMode"`
 }
 
-// UpdateMode controls when autoscaler applies changes to the pod resoures.
+// UpdateMode controls when autoscaler applies changes to the pod resources.
+// +kubebuilder:validation:Enum=Off;Initial;Recreate;Auto
 type UpdateMode string
 
 const (
@@ -157,6 +163,7 @@ const (
 
 // ContainerScalingMode controls whether autoscaler is enabled for a specific
 // container.
+// +kubebuilder:validation:Enum=Auto;Off
 type ContainerScalingMode string
 
 const (
@@ -265,17 +272,16 @@ type VerticalPodAutoscalerCondition struct {
 // +genclient
 // +genclient:noStatus
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+// +kubebuilder:resource:shortName=vpacheckpoint
 
 // VerticalPodAutoscalerCheckpoint is the checkpoint of the internal state of VPA that
 // is used for recovery after recommender's restart.
 type VerticalPodAutoscalerCheckpoint struct {
-	metav1.TypeMeta `json:",inline"`
-	// Standard object metadata. More info: https://git.k8s.io/community/contributors/devel/api-conventions.md#metadata
-	// +optional
+	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty" protobuf:"bytes,1,opt,name=metadata"`
 
 	// Specification of the checkpoint.
-	// More info: https://git.k8s.io/community/contributors/devel/api-conventions.md#spec-and-status.
+	// More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#spec-and-status.
 	// +optional
 	Spec VerticalPodAutoscalerCheckpointSpec `json:"spec,omitempty" protobuf:"bytes,2,opt,name=spec"`
 
@@ -305,6 +311,7 @@ type VerticalPodAutoscalerCheckpointSpec struct {
 // VerticalPodAutoscalerCheckpointStatus contains data of the checkpoint.
 type VerticalPodAutoscalerCheckpointStatus struct {
 	// The time when the status was last refreshed.
+	// +nullable
 	LastUpdateTime metav1.Time `json:"lastUpdateTime,omitempty" protobuf:"bytes,1,opt,name=lastUpdateTime"`
 
 	// Version of the format of the stored data.
@@ -317,9 +324,11 @@ type VerticalPodAutoscalerCheckpointStatus struct {
 	MemoryHistogram HistogramCheckpoint `json:"memoryHistogram,omitempty" protobuf:"bytes,4,rep,name=memoryHistogram"`
 
 	// Timestamp of the fist sample from the histograms.
+	// +nullable
 	FirstSampleStart metav1.Time `json:"firstSampleStart,omitempty" protobuf:"bytes,5,opt,name=firstSampleStart"`
 
 	// Timestamp of the last sample from the histograms.
+	// +nullable
 	LastSampleStart metav1.Time `json:"lastSampleStart,omitempty" protobuf:"bytes,6,opt,name=lastSampleStart"`
 
 	// Total number of samples in the histograms.
@@ -329,9 +338,12 @@ type VerticalPodAutoscalerCheckpointStatus struct {
 // HistogramCheckpoint contains data needed to reconstruct the histogram.
 type HistogramCheckpoint struct {
 	// Reference timestamp for samples collected within this histogram.
+	// +nullable
 	ReferenceTimestamp metav1.Time `json:"referenceTimestamp,omitempty" protobuf:"bytes,1,opt,name=referenceTimestamp"`
 
 	// Map from bucket index to bucket weight.
+	// +kubebuilder:validation:Type=object
+	// +kubebuilder:validation:XPreserveUnknownFields
 	BucketWeights map[int]uint32 `json:"bucketWeights,omitempty" protobuf:"bytes,2,opt,name=bucketWeights"`
 
 	// Sum of samples to be used as denominator for weights from BucketWeights.

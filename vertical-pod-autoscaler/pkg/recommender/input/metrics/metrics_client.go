@@ -23,9 +23,9 @@ import (
 	k8sapiv1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/recommender/model"
-	"k8s.io/klog"
+	recommender_metrics "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/metrics/recommender"
+	"k8s.io/klog/v2"
 	"k8s.io/metrics/pkg/apis/metrics/v1beta1"
-	resourceclient "k8s.io/metrics/pkg/client/clientset/versioned/typed/metrics/v1beta1"
 )
 
 // ContainerMetricsSnapshot contains information about usage of certain container within defined time window.
@@ -40,7 +40,7 @@ type ContainerMetricsSnapshot struct {
 	Usage model.Resources
 }
 
-// MetricsClient provides simple metrics on resources usage on containter level.
+// MetricsClient provides simple metrics on resources usage on container level.
 type MetricsClient interface {
 	// GetContainersMetrics returns an array of ContainerMetricsSnapshots,
 	// representing resource usage for every running container in the cluster
@@ -48,25 +48,26 @@ type MetricsClient interface {
 }
 
 type metricsClient struct {
-	metricsGetter resourceclient.PodMetricsesGetter
-	namespace     string
+	source     PodMetricsLister
+	namespace  string
+	clientName string
 }
 
 // NewMetricsClient creates new instance of MetricsClient, which is used by recommender.
-// It requires an instance of PodMetricsesGetter, which is used for underlying communication with metrics server.
 // namespace limits queries to particular namespace, use k8sapiv1.NamespaceAll to select all namespaces.
-func NewMetricsClient(metricsGetter resourceclient.PodMetricsesGetter, namespace string) MetricsClient {
+func NewMetricsClient(source PodMetricsLister, namespace, clientName string) MetricsClient {
 	return &metricsClient{
-		metricsGetter: metricsGetter,
-		namespace:     namespace,
+		source:     source,
+		namespace:  namespace,
+		clientName: clientName,
 	}
 }
 
 func (c *metricsClient) GetContainersMetrics() ([]*ContainerMetricsSnapshot, error) {
 	var metricsSnapshots []*ContainerMetricsSnapshot
 
-	podMetricsInterface := c.metricsGetter.PodMetricses(c.namespace)
-	podMetricsList, err := podMetricsInterface.List(context.TODO(), metav1.ListOptions{})
+	podMetricsList, err := c.source.List(context.TODO(), c.namespace, metav1.ListOptions{})
+	recommender_metrics.RecordMetricsServerResponse(err, c.clientName)
 	if err != nil {
 		return nil, err
 	}
@@ -75,7 +76,6 @@ func (c *metricsClient) GetContainersMetrics() ([]*ContainerMetricsSnapshot, err
 		metricsSnapshotsForPod := createContainerMetricsSnapshots(podMetrics)
 		metricsSnapshots = append(metricsSnapshots, metricsSnapshotsForPod...)
 	}
-
 	return metricsSnapshots, nil
 }
 

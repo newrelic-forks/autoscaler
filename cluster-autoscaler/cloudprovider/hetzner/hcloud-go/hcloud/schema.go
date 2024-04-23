@@ -1,22 +1,7 @@
-/*
-Copyright 2018 The Kubernetes Authors.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
-
 package hcloud
 
 import (
+	"fmt"
 	"net"
 	"strconv"
 	"time"
@@ -55,9 +40,9 @@ func ActionFromSchema(s schema.Action) *Action {
 
 // ActionsFromSchema converts a slice of schema.Action to a slice of Action.
 func ActionsFromSchema(s []schema.Action) []*Action {
-	var actions []*Action
-	for _, a := range s {
-		actions = append(actions, ActionFromSchema(a))
+	actions := make([]*Action, len(s))
+	for i, a := range s {
+		actions[i] = ActionFromSchema(a)
 	}
 	return actions
 }
@@ -97,15 +82,56 @@ func FloatingIPFromSchema(s schema.FloatingIP) *FloatingIP {
 	return f
 }
 
+// PrimaryIPFromSchema converts a schema.PrimaryIP to a PrimaryIP.
+func PrimaryIPFromSchema(s schema.PrimaryIP) *PrimaryIP {
+	f := &PrimaryIP{
+		ID:         s.ID,
+		Type:       PrimaryIPType(s.Type),
+		AutoDelete: s.AutoDelete,
+
+		Created: s.Created,
+		Blocked: s.Blocked,
+		Protection: PrimaryIPProtection{
+			Delete: s.Protection.Delete,
+		},
+		Name:         s.Name,
+		AssigneeType: s.AssigneeType,
+		AssigneeID:   s.AssigneeID,
+		Datacenter:   DatacenterFromSchema(s.Datacenter),
+	}
+
+	if f.Type == PrimaryIPTypeIPv4 {
+		f.IP = net.ParseIP(s.IP)
+	} else {
+		f.IP, f.Network, _ = net.ParseCIDR(s.IP)
+	}
+	f.DNSPtr = map[string]string{}
+	for _, entry := range s.DNSPtr {
+		f.DNSPtr[entry.IP] = entry.DNSPtr
+	}
+	f.Labels = map[string]string{}
+	for key, value := range s.Labels {
+		f.Labels[key] = value
+	}
+	return f
+}
+
 // ISOFromSchema converts a schema.ISO to an ISO.
 func ISOFromSchema(s schema.ISO) *ISO {
-	return &ISO{
+	iso := &ISO{
 		ID:          s.ID,
 		Name:        s.Name,
 		Description: s.Description,
 		Type:        ISOType(s.Type),
 		Deprecated:  s.Deprecated,
+		DeprecatableResource: DeprecatableResource{
+			DeprecationFromSchema(s.Deprecation),
+		},
 	}
+	if s.Architecture != nil {
+		iso.Architecture = Ptr(Architecture(*s.Architecture))
+	}
+	return iso
 }
 
 // LocationFromSchema converts a schema.Location to a Location.
@@ -187,6 +213,9 @@ func ServerFromSchema(s schema.Server) *Server {
 	for _, privNet := range s.PrivateNet {
 		server.PrivateNet = append(server.PrivateNet, ServerPrivateNetFromSchema(privNet))
 	}
+	if s.PlacementGroup != nil {
+		server.PlacementGroup = PlacementGroupFromSchema(*s.PlacementGroup)
+	}
 	return server
 }
 
@@ -199,6 +228,13 @@ func ServerPublicNetFromSchema(s schema.ServerPublicNet) ServerPublicNet {
 	for _, id := range s.FloatingIPs {
 		publicNet.FloatingIPs = append(publicNet.FloatingIPs, &FloatingIP{ID: id})
 	}
+	for _, fw := range s.Firewalls {
+		publicNet.Firewalls = append(publicNet.Firewalls,
+			&ServerFirewallStatus{
+				Firewall: Firewall{ID: fw.ID},
+				Status:   FirewallStatus(fw.Status)},
+		)
+	}
 	return publicNet
 }
 
@@ -206,6 +242,7 @@ func ServerPublicNetFromSchema(s schema.ServerPublicNet) ServerPublicNet {
 // a ServerPublicNetIPv4.
 func ServerPublicNetIPv4FromSchema(s schema.ServerPublicNetIPv4) ServerPublicNetIPv4 {
 	return ServerPublicNetIPv4{
+		ID:      s.ID,
 		IP:      net.ParseIP(s.IP),
 		Blocked: s.Blocked,
 		DNSPtr:  s.DNSPtr,
@@ -216,6 +253,7 @@ func ServerPublicNetIPv4FromSchema(s schema.ServerPublicNetIPv4) ServerPublicNet
 // a ServerPublicNetIPv6.
 func ServerPublicNetIPv6FromSchema(s schema.ServerPublicNetIPv6) ServerPublicNetIPv6 {
 	ipv6 := ServerPublicNetIPv6{
+		ID:      s.ID,
 		Blocked: s.Blocked,
 		DNSPtr:  map[string]string{},
 	}
@@ -243,14 +281,19 @@ func ServerPrivateNetFromSchema(s schema.ServerPrivateNet) ServerPrivateNet {
 // ServerTypeFromSchema converts a schema.ServerType to a ServerType.
 func ServerTypeFromSchema(s schema.ServerType) *ServerType {
 	st := &ServerType{
-		ID:          s.ID,
-		Name:        s.Name,
-		Description: s.Description,
-		Cores:       s.Cores,
-		Memory:      s.Memory,
-		Disk:        s.Disk,
-		StorageType: StorageType(s.StorageType),
-		CPUType:     CPUType(s.CPUType),
+		ID:              s.ID,
+		Name:            s.Name,
+		Description:     s.Description,
+		Cores:           s.Cores,
+		Memory:          s.Memory,
+		Disk:            s.Disk,
+		StorageType:     StorageType(s.StorageType),
+		CPUType:         CPUType(s.CPUType),
+		Architecture:    Architecture(s.Architecture),
+		IncludedTraffic: s.IncludedTraffic,
+		DeprecatableResource: DeprecatableResource{
+			DeprecationFromSchema(s.Deprecation),
+		},
 	}
 	for _, price := range s.Prices {
 		st.Pricings = append(st.Pricings, ServerTypeLocationPricing{
@@ -265,6 +308,7 @@ func ServerTypeFromSchema(s schema.ServerType) *ServerType {
 			},
 		})
 	}
+
 	return st
 }
 
@@ -287,18 +331,20 @@ func SSHKeyFromSchema(s schema.SSHKey) *SSHKey {
 // ImageFromSchema converts a schema.Image to an Image.
 func ImageFromSchema(s schema.Image) *Image {
 	i := &Image{
-		ID:          s.ID,
-		Type:        ImageType(s.Type),
-		Status:      ImageStatus(s.Status),
-		Description: s.Description,
-		DiskSize:    s.DiskSize,
-		Created:     s.Created,
-		RapidDeploy: s.RapidDeploy,
-		OSFlavor:    s.OSFlavor,
+		ID:           s.ID,
+		Type:         ImageType(s.Type),
+		Status:       ImageStatus(s.Status),
+		Description:  s.Description,
+		DiskSize:     s.DiskSize,
+		Created:      s.Created,
+		RapidDeploy:  s.RapidDeploy,
+		OSFlavor:     s.OSFlavor,
+		Architecture: Architecture(s.Architecture),
 		Protection: ImageProtection{
 			Delete: s.Protection.Delete,
 		},
 		Deprecated: s.Deprecated,
+		Deleted:    s.Deleted,
 	}
 	if s.Name != nil {
 		i.Name = *s.Name
@@ -360,7 +406,8 @@ func NetworkFromSchema(s schema.Network) *Network {
 		Protection: NetworkProtection{
 			Delete: s.Protection.Delete,
 		},
-		Labels: map[string]string{},
+		Labels:                map[string]string{},
+		ExposeRoutesToVSwitch: s.ExposeRoutesToVSwitch,
 	}
 
 	_, n.IPRange, _ = net.ParseCIDR(s.IPRange)
@@ -387,6 +434,7 @@ func NetworkSubnetFromSchema(s schema.NetworkSubnet) NetworkSubnet {
 		Type:        NetworkSubnetType(s.Type),
 		NetworkZone: NetworkZone(s.NetworkZone),
 		Gateway:     net.ParseIP(s.Gateway),
+		VSwitchID:   s.VSwitchID,
 	}
 	_, sn.IPRange, _ = net.ParseCIDR(s.IPRange)
 	return sn
@@ -436,10 +484,12 @@ func LoadBalancerFromSchema(s schema.LoadBalancer) *LoadBalancer {
 		PublicNet: LoadBalancerPublicNet{
 			Enabled: s.PublicNet.Enabled,
 			IPv4: LoadBalancerPublicNetIPv4{
-				IP: net.ParseIP(s.PublicNet.IPv4.IP),
+				IP:     net.ParseIP(s.PublicNet.IPv4.IP),
+				DNSPtr: s.PublicNet.IPv4.DNSPtr,
 			},
 			IPv6: LoadBalancerPublicNetIPv6{
-				IP: net.ParseIP(s.PublicNet.IPv6.IP),
+				IP:     net.ParseIP(s.PublicNet.IPv6.IP),
+				DNSPtr: s.PublicNet.IPv6.DNSPtr,
 			},
 		},
 		Location:         LocationFromSchema(s.Location),
@@ -562,6 +612,7 @@ func CertificateFromSchema(s schema.Certificate) *Certificate {
 	c := &Certificate{
 		ID:             s.ID,
 		Name:           s.Name,
+		Type:           CertificateType(s.Type),
 		Certificate:    s.Certificate,
 		Created:        s.Created,
 		NotValidBefore: s.NotValidBefore,
@@ -569,12 +620,26 @@ func CertificateFromSchema(s schema.Certificate) *Certificate {
 		DomainNames:    s.DomainNames,
 		Fingerprint:    s.Fingerprint,
 	}
+	if s.Status != nil {
+		c.Status = &CertificateStatus{
+			Issuance: CertificateStatusType(s.Status.Issuance),
+			Renewal:  CertificateStatusType(s.Status.Renewal),
+		}
+		if s.Status.Error != nil {
+			certErr := ErrorFromSchema(*s.Status.Error)
+			c.Status.Error = &certErr
+		}
+	}
 	if len(s.Labels) > 0 {
-		c.Labels = make(map[string]string)
+		c.Labels = s.Labels
 	}
-	for key, value := range s.Labels {
-		c.Labels[key] = value
+	if len(s.UsedBy) > 0 {
+		c.UsedBy = make([]CertificateUsedByRef, len(s.UsedBy))
+		for i, ref := range s.UsedBy {
+			c.UsedBy[i] = CertificateUsedByRef{ID: ref.ID, Type: CertificateUsedByRefType(ref.Type)}
+		}
 	}
+
 	return c
 }
 
@@ -597,8 +662,7 @@ func ErrorFromSchema(s schema.Error) Error {
 		Message: s.Message,
 	}
 
-	switch d := s.Details.(type) {
-	case schema.ErrorDetailsInvalidInput:
+	if d, ok := s.Details.(schema.ErrorDetailsInvalidInput); ok {
 		details := ErrorDetailsInvalidInput{
 			Fields: []ErrorDetailsInvalidInputField{},
 		}
@@ -643,6 +707,48 @@ func PricingFromSchema(s schema.Pricing) Pricing {
 		ServerBackup: ServerBackupPricing{
 			Percentage: s.ServerBackup.Percentage,
 		},
+		Volume: VolumePricing{
+			PerGBMonthly: Price{
+				Currency: s.Currency,
+				VATRate:  s.VATRate,
+				Net:      s.Volume.PricePerGBPerMonth.Net,
+				Gross:    s.Volume.PricePerGBPerMonth.Gross,
+			},
+		},
+	}
+	for _, floatingIPType := range s.FloatingIPs {
+		var pricings []FloatingIPTypeLocationPricing
+		for _, price := range floatingIPType.Prices {
+			p := FloatingIPTypeLocationPricing{
+				Location: &Location{Name: price.Location},
+				Monthly: Price{
+					Currency: s.Currency,
+					VATRate:  s.VATRate,
+					Net:      price.PriceMonthly.Net,
+					Gross:    price.PriceMonthly.Gross,
+				},
+			}
+			pricings = append(pricings, p)
+		}
+		p.FloatingIPs = append(p.FloatingIPs, FloatingIPTypePricing{Type: FloatingIPType(floatingIPType.Type), Pricings: pricings})
+	}
+	for _, primaryIPType := range s.PrimaryIPs {
+		var pricings []PrimaryIPTypePricing
+		for _, price := range primaryIPType.Prices {
+			p := PrimaryIPTypePricing{
+				Location: price.Location,
+				Monthly: PrimaryIPPrice{
+					Net:   price.PriceMonthly.Net,
+					Gross: price.PriceMonthly.Gross,
+				},
+				Hourly: PrimaryIPPrice{
+					Net:   price.PriceHourly.Net,
+					Gross: price.PriceHourly.Gross,
+				},
+			}
+			pricings = append(pricings, p)
+		}
+		p.PrimaryIPs = append(p.PrimaryIPs, PrimaryIPPricing{Type: primaryIPType.Type, Pricings: pricings})
 	}
 	for _, serverType := range s.ServerTypes {
 		var pricings []ServerTypeLocationPricing
@@ -701,6 +807,78 @@ func PricingFromSchema(s schema.Pricing) Pricing {
 	return p
 }
 
+// FirewallFromSchema converts a schema.Firewall to a Firewall.
+func FirewallFromSchema(s schema.Firewall) *Firewall {
+	f := &Firewall{
+		ID:      s.ID,
+		Name:    s.Name,
+		Labels:  map[string]string{},
+		Created: s.Created,
+	}
+	for key, value := range s.Labels {
+		f.Labels[key] = value
+	}
+	for _, res := range s.AppliedTo {
+		r := FirewallResource{Type: FirewallResourceType(res.Type)}
+		switch r.Type {
+		case FirewallResourceTypeLabelSelector:
+			r.LabelSelector = &FirewallResourceLabelSelector{Selector: res.LabelSelector.Selector}
+		case FirewallResourceTypeServer:
+			r.Server = &FirewallResourceServer{ID: res.Server.ID}
+		}
+		f.AppliedTo = append(f.AppliedTo, r)
+	}
+	for _, rule := range s.Rules {
+		sourceIPs := []net.IPNet{}
+		for _, sourceIP := range rule.SourceIPs {
+			_, mask, err := net.ParseCIDR(sourceIP)
+			if err == nil && mask != nil {
+				sourceIPs = append(sourceIPs, *mask)
+			}
+		}
+		destinationIPs := []net.IPNet{}
+		for _, destinationIP := range rule.DestinationIPs {
+			_, mask, err := net.ParseCIDR(destinationIP)
+			if err == nil && mask != nil {
+				destinationIPs = append(destinationIPs, *mask)
+			}
+		}
+		f.Rules = append(f.Rules, FirewallRule{
+			Direction:      FirewallRuleDirection(rule.Direction),
+			SourceIPs:      sourceIPs,
+			DestinationIPs: destinationIPs,
+			Protocol:       FirewallRuleProtocol(rule.Protocol),
+			Port:           rule.Port,
+			Description:    rule.Description,
+		})
+	}
+	return f
+}
+
+// PlacementGroupFromSchema converts a schema.PlacementGroup to a PlacementGroup.
+func PlacementGroupFromSchema(s schema.PlacementGroup) *PlacementGroup {
+	g := &PlacementGroup{
+		ID:      s.ID,
+		Name:    s.Name,
+		Labels:  s.Labels,
+		Created: s.Created,
+		Servers: s.Servers,
+		Type:    PlacementGroupType(s.Type),
+	}
+	return g
+}
+
+func placementGroupCreateOptsToSchema(opts PlacementGroupCreateOpts) schema.PlacementGroupCreateRequest {
+	req := schema.PlacementGroupCreateRequest{
+		Name: opts.Name,
+		Type: string(opts.Type),
+	}
+	if opts.Labels != nil {
+		req.Labels = &opts.Labels
+	}
+	return req
+}
+
 func loadBalancerCreateOptsToSchema(opts LoadBalancerCreateOpts) schema.LoadBalancerCreateRequest {
 	req := schema.LoadBalancerCreateRequest{
 		Name:            opts.Name,
@@ -718,22 +896,24 @@ func loadBalancerCreateOptsToSchema(opts LoadBalancerCreateOpts) schema.LoadBala
 	}
 	if opts.Location != nil {
 		if opts.Location.ID != 0 {
-			req.Location = String(strconv.Itoa(opts.Location.ID))
+			req.Location = Ptr(strconv.FormatInt(opts.Location.ID, 10))
 		} else {
-			req.Location = String(opts.Location.Name)
+			req.Location = Ptr(opts.Location.Name)
 		}
 	}
 	if opts.NetworkZone != "" {
-		req.NetworkZone = String(string(opts.NetworkZone))
+		req.NetworkZone = Ptr(string(opts.NetworkZone))
 	}
 	if opts.Labels != nil {
 		req.Labels = &opts.Labels
 	}
 	if opts.Network != nil {
-		req.Network = Int(opts.Network.ID)
+		req.Network = Ptr(opts.Network.ID)
 	}
 	for _, target := range opts.Targets {
-		schemaTarget := schema.LoadBalancerCreateRequestTarget{}
+		schemaTarget := schema.LoadBalancerCreateRequestTarget{
+			UsePrivateIP: target.UsePrivateIP,
+		}
 		switch target.Type {
 		case LoadBalancerTargetTypeServer:
 			schemaTarget.Type = string(LoadBalancerTargetTypeServer)
@@ -760,11 +940,13 @@ func loadBalancerCreateOptsToSchema(opts LoadBalancerCreateOpts) schema.LoadBala
 				StickySessions: service.HTTP.StickySessions,
 				CookieName:     service.HTTP.CookieName,
 			}
-			if sec := service.HTTP.CookieLifetime.Seconds(); sec != 0 {
-				schemaService.HTTP.CookieLifetime = Int(int(sec))
+			if service.HTTP.CookieLifetime != nil {
+				if sec := service.HTTP.CookieLifetime.Seconds(); sec != 0 {
+					schemaService.HTTP.CookieLifetime = Ptr(int(sec))
+				}
 			}
 			if service.HTTP.Certificates != nil {
-				certificates := []int{}
+				certificates := []int64{}
 				for _, certificate := range service.HTTP.Certificates {
 					certificates = append(certificates, certificate.ID)
 				}
@@ -778,10 +960,10 @@ func loadBalancerCreateOptsToSchema(opts LoadBalancerCreateOpts) schema.LoadBala
 				Retries:  service.HealthCheck.Retries,
 			}
 			if service.HealthCheck.Interval != nil {
-				schemaHealthCheck.Interval = Int(int(service.HealthCheck.Interval.Seconds()))
+				schemaHealthCheck.Interval = Ptr(int(service.HealthCheck.Interval.Seconds()))
 			}
 			if service.HealthCheck.Timeout != nil {
-				schemaHealthCheck.Timeout = Int(int(service.HealthCheck.Timeout.Seconds()))
+				schemaHealthCheck.Timeout = Ptr(int(service.HealthCheck.Timeout.Seconds()))
 			}
 			if service.HealthCheck.HTTP != nil {
 				schemaHealthCheckHTTP := &schema.LoadBalancerCreateRequestServiceHealthCheckHTTP{
@@ -791,7 +973,7 @@ func loadBalancerCreateOptsToSchema(opts LoadBalancerCreateOpts) schema.LoadBala
 					TLS:      service.HealthCheck.HTTP.TLS,
 				}
 				if service.HealthCheck.HTTP.StatusCodes != nil {
-					schemaHealthCheckHTTP.StatusCodes = &service.HealthCheck.HTTP.StatusCodes
+					schemaHealthCheckHTTP.StatusCodes = &service.HealthCheck.HTTP.StatusCodes //nolint:gosec // does not result in bug
 				}
 				schemaHealthCheck.HTTP = schemaHealthCheckHTTP
 			}
@@ -816,10 +998,10 @@ func loadBalancerAddServiceOptsToSchema(opts LoadBalancerAddServiceOpts) schema.
 			StickySessions: opts.HTTP.StickySessions,
 		}
 		if opts.HTTP.CookieLifetime != nil {
-			req.HTTP.CookieLifetime = Int(int(opts.HTTP.CookieLifetime.Seconds()))
+			req.HTTP.CookieLifetime = Ptr(int(opts.HTTP.CookieLifetime.Seconds()))
 		}
 		if opts.HTTP.Certificates != nil {
-			certificates := []int{}
+			certificates := []int64{}
 			for _, certificate := range opts.HTTP.Certificates {
 				certificates = append(certificates, certificate.ID)
 			}
@@ -833,10 +1015,10 @@ func loadBalancerAddServiceOptsToSchema(opts LoadBalancerAddServiceOpts) schema.
 			Retries:  opts.HealthCheck.Retries,
 		}
 		if opts.HealthCheck.Interval != nil {
-			req.HealthCheck.Interval = Int(int(opts.HealthCheck.Interval.Seconds()))
+			req.HealthCheck.Interval = Ptr(int(opts.HealthCheck.Interval.Seconds()))
 		}
 		if opts.HealthCheck.Timeout != nil {
-			req.HealthCheck.Timeout = Int(int(opts.HealthCheck.Timeout.Seconds()))
+			req.HealthCheck.Timeout = Ptr(int(opts.HealthCheck.Timeout.Seconds()))
 		}
 		if opts.HealthCheck.HTTP != nil {
 			req.HealthCheck.HTTP = &schema.LoadBalancerActionAddServiceRequestHealthCheckHTTP{
@@ -859,7 +1041,7 @@ func loadBalancerUpdateServiceOptsToSchema(opts LoadBalancerUpdateServiceOpts) s
 		Proxyprotocol:   opts.Proxyprotocol,
 	}
 	if opts.Protocol != "" {
-		req.Protocol = String(string(opts.Protocol))
+		req.Protocol = Ptr(string(opts.Protocol))
 	}
 	if opts.HTTP != nil {
 		req.HTTP = &schema.LoadBalancerActionUpdateServiceRequestHTTP{
@@ -868,10 +1050,10 @@ func loadBalancerUpdateServiceOptsToSchema(opts LoadBalancerUpdateServiceOpts) s
 			StickySessions: opts.HTTP.StickySessions,
 		}
 		if opts.HTTP.CookieLifetime != nil {
-			req.HTTP.CookieLifetime = Int(int(opts.HTTP.CookieLifetime.Seconds()))
+			req.HTTP.CookieLifetime = Ptr(int(opts.HTTP.CookieLifetime.Seconds()))
 		}
 		if opts.HTTP.Certificates != nil {
-			certificates := []int{}
+			certificates := []int64{}
 			for _, certificate := range opts.HTTP.Certificates {
 				certificates = append(certificates, certificate.ID)
 			}
@@ -884,13 +1066,13 @@ func loadBalancerUpdateServiceOptsToSchema(opts LoadBalancerUpdateServiceOpts) s
 			Retries: opts.HealthCheck.Retries,
 		}
 		if opts.HealthCheck.Interval != nil {
-			req.HealthCheck.Interval = Int(int(opts.HealthCheck.Interval.Seconds()))
+			req.HealthCheck.Interval = Ptr(int(opts.HealthCheck.Interval.Seconds()))
 		}
 		if opts.HealthCheck.Timeout != nil {
-			req.HealthCheck.Timeout = Int(int(opts.HealthCheck.Timeout.Seconds()))
+			req.HealthCheck.Timeout = Ptr(int(opts.HealthCheck.Timeout.Seconds()))
 		}
 		if opts.HealthCheck.Protocol != "" {
-			req.HealthCheck.Protocol = String(string(opts.HealthCheck.Protocol))
+			req.HealthCheck.Protocol = Ptr(string(opts.HealthCheck.Protocol))
 		}
 		if opts.HealthCheck.HTTP != nil {
 			req.HealthCheck.HTTP = &schema.LoadBalancerActionUpdateServiceRequestHealthCheckHTTP{
@@ -905,4 +1087,185 @@ func loadBalancerUpdateServiceOptsToSchema(opts LoadBalancerUpdateServiceOpts) s
 		}
 	}
 	return req
+}
+
+func firewallCreateOptsToSchema(opts FirewallCreateOpts) schema.FirewallCreateRequest {
+	req := schema.FirewallCreateRequest{
+		Name: opts.Name,
+	}
+	if opts.Labels != nil {
+		req.Labels = &opts.Labels
+	}
+	for _, rule := range opts.Rules {
+		schemaRule := schema.FirewallRule{
+			Direction:   string(rule.Direction),
+			Protocol:    string(rule.Protocol),
+			Port:        rule.Port,
+			Description: rule.Description,
+		}
+		switch rule.Direction {
+		case FirewallRuleDirectionOut:
+			schemaRule.DestinationIPs = make([]string, len(rule.DestinationIPs))
+			for i, destinationIP := range rule.DestinationIPs {
+				schemaRule.DestinationIPs[i] = destinationIP.String()
+			}
+		case FirewallRuleDirectionIn:
+			schemaRule.SourceIPs = make([]string, len(rule.SourceIPs))
+			for i, sourceIP := range rule.SourceIPs {
+				schemaRule.SourceIPs[i] = sourceIP.String()
+			}
+		}
+		req.Rules = append(req.Rules, schemaRule)
+	}
+	for _, res := range opts.ApplyTo {
+		schemaFirewallResource := schema.FirewallResource{
+			Type: string(res.Type),
+		}
+		switch res.Type {
+		case FirewallResourceTypeServer:
+			schemaFirewallResource.Server = &schema.FirewallResourceServer{
+				ID: res.Server.ID,
+			}
+		case FirewallResourceTypeLabelSelector:
+			schemaFirewallResource.LabelSelector = &schema.FirewallResourceLabelSelector{Selector: res.LabelSelector.Selector}
+		}
+
+		req.ApplyTo = append(req.ApplyTo, schemaFirewallResource)
+	}
+	return req
+}
+
+func firewallSetRulesOptsToSchema(opts FirewallSetRulesOpts) schema.FirewallActionSetRulesRequest {
+	req := schema.FirewallActionSetRulesRequest{Rules: []schema.FirewallRule{}}
+	for _, rule := range opts.Rules {
+		schemaRule := schema.FirewallRule{
+			Direction:   string(rule.Direction),
+			Protocol:    string(rule.Protocol),
+			Port:        rule.Port,
+			Description: rule.Description,
+		}
+		switch rule.Direction {
+		case FirewallRuleDirectionOut:
+			schemaRule.DestinationIPs = make([]string, len(rule.DestinationIPs))
+			for i, destinationIP := range rule.DestinationIPs {
+				schemaRule.DestinationIPs[i] = destinationIP.String()
+			}
+		case FirewallRuleDirectionIn:
+			schemaRule.SourceIPs = make([]string, len(rule.SourceIPs))
+			for i, sourceIP := range rule.SourceIPs {
+				schemaRule.SourceIPs[i] = sourceIP.String()
+			}
+		}
+		req.Rules = append(req.Rules, schemaRule)
+	}
+	return req
+}
+
+func firewallResourceToSchema(resource FirewallResource) schema.FirewallResource {
+	s := schema.FirewallResource{
+		Type: string(resource.Type),
+	}
+	switch resource.Type {
+	case FirewallResourceTypeLabelSelector:
+		s.LabelSelector = &schema.FirewallResourceLabelSelector{Selector: resource.LabelSelector.Selector}
+	case FirewallResourceTypeServer:
+		s.Server = &schema.FirewallResourceServer{ID: resource.Server.ID}
+	}
+	return s
+}
+
+func serverMetricsFromSchema(s *schema.ServerGetMetricsResponse) (*ServerMetrics, error) {
+	ms := ServerMetrics{
+		Start: s.Metrics.Start,
+		End:   s.Metrics.End,
+		Step:  s.Metrics.Step,
+	}
+
+	timeSeries := make(map[string][]ServerMetricsValue)
+	for tsName, v := range s.Metrics.TimeSeries {
+		vals := make([]ServerMetricsValue, len(v.Values))
+
+		for i, rawVal := range v.Values {
+			var val ServerMetricsValue
+
+			tup, ok := rawVal.([]interface{})
+			if !ok {
+				return nil, fmt.Errorf("failed to convert value to tuple: %v", rawVal)
+			}
+			if len(tup) != 2 {
+				return nil, fmt.Errorf("invalid tuple size: %d: %v", len(tup), rawVal)
+			}
+			ts, ok := tup[0].(float64)
+			if !ok {
+				return nil, fmt.Errorf("convert to float64: %v", tup[0])
+			}
+			val.Timestamp = ts
+
+			v, ok := tup[1].(string)
+			if !ok {
+				return nil, fmt.Errorf("not a string: %v", tup[1])
+			}
+			val.Value = v
+			vals[i] = val
+		}
+
+		timeSeries[tsName] = vals
+	}
+	ms.TimeSeries = timeSeries
+
+	return &ms, nil
+}
+
+func loadBalancerMetricsFromSchema(s *schema.LoadBalancerGetMetricsResponse) (*LoadBalancerMetrics, error) {
+	ms := LoadBalancerMetrics{
+		Start: s.Metrics.Start,
+		End:   s.Metrics.End,
+		Step:  s.Metrics.Step,
+	}
+
+	timeSeries := make(map[string][]LoadBalancerMetricsValue)
+	for tsName, v := range s.Metrics.TimeSeries {
+		vals := make([]LoadBalancerMetricsValue, len(v.Values))
+
+		for i, rawVal := range v.Values {
+			var val LoadBalancerMetricsValue
+
+			tup, ok := rawVal.([]interface{})
+			if !ok {
+				return nil, fmt.Errorf("failed to convert value to tuple: %v", rawVal)
+			}
+			if len(tup) != 2 {
+				return nil, fmt.Errorf("invalid tuple size: %d: %v", len(tup), rawVal)
+			}
+			ts, ok := tup[0].(float64)
+			if !ok {
+				return nil, fmt.Errorf("convert to float64: %v", tup[0])
+			}
+			val.Timestamp = ts
+
+			v, ok := tup[1].(string)
+			if !ok {
+				return nil, fmt.Errorf("not a string: %v", tup[1])
+			}
+			val.Value = v
+			vals[i] = val
+		}
+
+		timeSeries[tsName] = vals
+	}
+	ms.TimeSeries = timeSeries
+
+	return &ms, nil
+}
+
+// DeprecationFromSchema converts a [schema.DeprecationInfo] to a [DeprecationInfo].
+func DeprecationFromSchema(s *schema.DeprecationInfo) *DeprecationInfo {
+	if s == nil {
+		return nil
+	}
+
+	return &DeprecationInfo{
+		Announced:        s.Announced,
+		UnavailableAfter: s.UnavailableAfter,
+	}
 }

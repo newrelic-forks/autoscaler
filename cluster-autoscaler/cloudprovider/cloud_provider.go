@@ -38,6 +38,10 @@ const (
 	BaiducloudProviderName = "baiducloud"
 	// BizflyCloudProviderName gets the provider name of bizflycloud
 	BizflyCloudProviderName = "bizflycloud"
+	// BrightboxProviderName gets the provider name of brightbox
+	BrightboxProviderName = "brightbox"
+	// CherryServersProviderName gets the provider name of cherry servers
+	CherryServersProviderName = "cherryservers"
 	// CloudStackProviderName gets the provider name of cloudstack
 	CloudStackProviderName = "cloudstack"
 	// ClusterAPIProviderName gets the provider name of clusterapi
@@ -52,17 +56,48 @@ const (
 	HetznerProviderName = "hetzner"
 	// MagnumProviderName gets the provider name of magnum
 	MagnumProviderName = "magnum"
+	// KamateraProviderName gets the provider name of kamatera
+	KamateraProviderName = "kamatera"
 	// KubemarkProviderName gets the provider name of kubemark
 	KubemarkProviderName = "kubemark"
+	// KwokProviderName gets the provider name of kwok
+	KwokProviderName = "kwok"
 	// HuaweicloudProviderName gets the provider name of huaweicloud
 	HuaweicloudProviderName = "huaweicloud"
 	// IonoscloudProviderName gets the provider name of ionoscloud
 	IonoscloudProviderName = "ionoscloud"
+	// OracleCloudProviderName gets the provider name of oci
+	OracleCloudProviderName = "oci"
 	// OVHcloudProviderName gets the provider name of ovhcloud
 	OVHcloudProviderName = "ovhcloud"
 	// LinodeProviderName gets the provider name of linode
 	LinodeProviderName = "linode"
+	// ScalewayProviderName gets the provider name of scaleway
+	ScalewayProviderName = "scaleway"
+	// VolcengineProviderName gets the provider name of volcengine
+	VolcengineProviderName = "volcengine"
+	// VultrProviderName gets the provider name of vultr
+	VultrProviderName = "vultr"
+	// PacketProviderName gets the provider name of packet
+	PacketProviderName = "packet"
+	// EquinixMetalProviderName gets the provider name of packet
+	EquinixMetalProviderName = "equinixmetal"
+	// TencentcloudProviderName gets the provider name of tencentcloud
+	TencentcloudProviderName = "tencentcloud"
+	// ExternalGrpcProviderName gets the provider name of the external grpc provider
+	ExternalGrpcProviderName = "externalgrpc"
+	// CivoProviderName gets the provider name of civo
+	CivoProviderName = "civo"
+	// RancherProviderName gets the provider name of rancher
+	RancherProviderName = "rancher"
 )
+
+// GpuConfig contains the label, type and the resource name for a GPU.
+type GpuConfig struct {
+	Label        string
+	Type         string
+	ResourceName apiv1.ResourceName
+}
 
 // CloudProvider contains configuration info and functions for interacting with
 // cloud provider (GCE, AWS, etc).
@@ -77,6 +112,10 @@ type CloudProvider interface {
 	// should not be processed by cluster autoscaler, or non-nil error if such
 	// occurred. Must be implemented.
 	NodeGroupForNode(*apiv1.Node) (NodeGroup, error)
+
+	// HasInstance returns whether the node has corresponding instance in cloud provider,
+	// true if the node has an instance, false if it no longer exists
+	HasInstance(*apiv1.Node) (bool, error)
 
 	// Pricing returns pricing model for this cloud provider or error if not available.
 	// Implementation optional.
@@ -100,6 +139,10 @@ type CloudProvider interface {
 
 	// GetAvailableGPUTypes return all available GPU types cloud provider supports.
 	GetAvailableGPUTypes() map[string]struct{}
+
+	// GetNodeGpuConfig returns the label, type and resource name for the GPU added to node. If node doesn't have
+	// any GPUs, it returns nil.
+	GetNodeGpuConfig(*apiv1.Node) *GpuConfig
 
 	// Cleanup cleans up open resources before the cloud provider is destroyed, i.e. go routines etc.
 	Cleanup() error
@@ -138,6 +181,17 @@ type NodeGroup interface {
 	// to explicitly name it and use DeleteNode. This function should wait until
 	// node group size is updated. Implementation required.
 	IncreaseSize(delta int) error
+
+	// AtomicIncreaseSize tries to increase the size of the node group atomically.
+	// - If the method returns nil, it guarantees that delta instances will be added to the node group
+	//   within its MaxNodeProvisionTime. The function should wait until node group size is updated.
+	//   The cloud provider is responsible for tracking and ensuring successful scale up asynchronously.
+	// - If the method returns an error, it guarantees that no new instances will be added to the node group
+	//   as a result of this call. The cloud provider is responsible for ensuring that before returning from the method.
+	// Implementation is optional. If implemented, CA will take advantage of the method while scaling up
+	// GenericScaleUp ProvisioningClass, guaranteeing that all instances required for such a ProvisioningRequest
+	// are provisioned atomically.
+	AtomicIncreaseSize(delta int) error
 
 	// DeleteNodes deletes nodes from this node group. Error is returned either on
 	// failure or if the given node doesn't belong to this node group. This function

@@ -26,15 +26,18 @@ import (
 	"time"
 
 	"github.com/Azure/go-autorest/autorest/azure"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
+	"k8s.io/autoscaler/cluster-autoscaler/config"
 	"k8s.io/autoscaler/cluster-autoscaler/config/dynamic"
+	kretry "k8s.io/client-go/util/retry"
 	klog "k8s.io/klog/v2"
+	"sigs.k8s.io/cloud-provider-azure/pkg/retry"
 )
 
 const (
 	vmTypeVMSS     = "vmss"
 	vmTypeStandard = "standard"
-	vmTypeAKS      = "aks"
 
 	scaleToZeroSupportedStandard = false
 	scaleToZeroSupportedVMSS     = true
@@ -90,7 +93,7 @@ func createAzureManagerInternal(configReader io.Reader, discoveryOpts cloudprovi
 	if cfg.VmssCacheTTL != 0 {
 		cacheTTL = time.Duration(cfg.VmssCacheTTL) * time.Second
 	}
-	cache, err := newAzureCache(azClient, cacheTTL, cfg.ResourceGroup, cfg.VMType)
+	cache, err := newAzureCache(azClient, cacheTTL, cfg.ResourceGroup, cfg.VMType, cfg.EnableDynamicInstanceList, cfg.Location)
 	if err != nil {
 		return nil, err
 	}
@@ -106,7 +109,18 @@ func createAzureManagerInternal(configReader io.Reader, discoveryOpts cloudprovi
 		return nil, err
 	}
 
-	if err := manager.forceRefresh(); err != nil {
+	retryBackoff := wait.Backoff{
+		Duration: 2 * time.Minute,
+		Factor:   1.0,
+		Jitter:   0.1,
+		Steps:    6,
+		Cap:      10 * time.Minute,
+	}
+
+	err = kretry.OnError(retryBackoff, retry.IsErrorRetriable, func() (err error) {
+		return manager.forceRefresh()
+	})
+	if err != nil {
 		return nil, err
 	}
 
@@ -152,8 +166,6 @@ func (m *AzureManager) buildNodeGroupFromSpec(spec string) (cloudprovider.NodeGr
 		return NewAgentPool(s, m)
 	case vmTypeVMSS:
 		return NewScaleSet(s, m, -1)
-	case vmTypeAKS:
-		return NewAKSAgentPool(s, m)
 	default:
 		return nil, fmt.Errorf("vmtype %s not supported", m.config.VMType)
 	}
@@ -244,6 +256,29 @@ func (m *AzureManager) UnregisterNodeGroup(nodeGroup cloudprovider.NodeGroup) bo
 // GetNodeGroupForInstance returns the NodeGroup of the given Instance
 func (m *AzureManager) GetNodeGroupForInstance(instance *azureRef) (cloudprovider.NodeGroup, error) {
 	return m.azureCache.FindForInstance(instance, m.config.VMType)
+}
+
+// GetScaleSetOptions parse options extracted from VMSS tags and merges them with provided defaults
+func (m *AzureManager) GetScaleSetOptions(scaleSetName string, defaults config.NodeGroupAutoscalingOptions) *config.NodeGroupAutoscalingOptions {
+	options := m.azureCache.getAutoscalingOptions(azureRef{Name: scaleSetName})
+	if options == nil || len(options) == 0 {
+		return &defaults
+	}
+
+	if opt, ok := getFloat64Option(options, scaleSetName, config.DefaultScaleDownUtilizationThresholdKey); ok {
+		defaults.ScaleDownUtilizationThreshold = opt
+	}
+	if opt, ok := getFloat64Option(options, scaleSetName, config.DefaultScaleDownGpuUtilizationThresholdKey); ok {
+		defaults.ScaleDownGpuUtilizationThreshold = opt
+	}
+	if opt, ok := getDurationOption(options, scaleSetName, config.DefaultScaleDownUnneededTimeKey); ok {
+		defaults.ScaleDownUnneededTime = opt
+	}
+	if opt, ok := getDurationOption(options, scaleSetName, config.DefaultScaleDownUnreadyTimeKey); ok {
+		defaults.ScaleDownUnreadyTime = opt
+	}
+
+	return &defaults
 }
 
 // Cleanup the cache.

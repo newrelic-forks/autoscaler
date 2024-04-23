@@ -29,10 +29,9 @@ import (
 )
 
 var (
-	testPodID1       = PodID{"namespace-1", "pod-1"}
-	testPodID2       = PodID{"namespace-1", "pod-2"}
-	testContainerID1 = ContainerID{testPodID1, "container-1"}
-	testRequest      = Resources{
+	testPodID1  = PodID{"namespace-1", "pod-1"}
+	testPodID2  = PodID{"namespace-1", "pod-2"}
+	testRequest = Resources{
 		ResourceCPU:    CPUAmountFromCores(3.14),
 		ResourceMemory: MemoryAmountFromBytes(3.14e9),
 	}
@@ -65,14 +64,16 @@ func addTestMemorySample(cluster *ClusterState, container ContainerID, memoryByt
 }
 
 // Creates two pods, each having two containers:
-//   testPodID1: { 'app-A', 'app-B' }
-//   testPodID2: { 'app-A', 'app-C' }
+//
+//	testPodID1: { 'app-A', 'app-B' }
+//	testPodID2: { 'app-A', 'app-C' }
+//
 // Adds a few usage samples to the containers.
 // Verifies that AggregateStateByContainerName() properly aggregates
 // container CPU and memory peak histograms, grouping the two containers
 // with the same name ('app-A') together.
 func TestAggregateStateByContainerName(t *testing.T) {
-	cluster := NewClusterState()
+	cluster := NewClusterState(testGcPeriod)
 	cluster.AddOrUpdatePod(testPodID1, testLabels, apiv1.PodRunning)
 	otherLabels := labels.Set{"label-2": "value-2"}
 	cluster.AddOrUpdatePod(testPodID2, otherLabels, apiv1.PodRunning)
@@ -141,6 +142,7 @@ func TestAggregateContainerStateSaveToCheckpoint(t *testing.T) {
 
 	assert.NoError(t, err)
 
+	assert.True(t, time.Since(checkpoint.LastUpdateTime.Time) < 10*time.Second)
 	assert.Equal(t, t1, checkpoint.FirstSampleStart.Time)
 	assert.Equal(t, t2, checkpoint.LastSampleStart.Time)
 	assert.Equal(t, 10, checkpoint.TotalSamplesCount)
@@ -168,6 +170,7 @@ func TestAggregateContainerStateLoadFromCheckpoint(t *testing.T) {
 
 	checkpoint := vpa_types.VerticalPodAutoscalerCheckpointStatus{
 		Version:           SupportedCheckpointVersion,
+		LastUpdateTime:    metav1.NewTime(time.Now()),
 		FirstSampleStart:  metav1.NewTime(t1),
 		LastSampleStart:   metav1.NewTime(t2),
 		TotalSamplesCount: 20,

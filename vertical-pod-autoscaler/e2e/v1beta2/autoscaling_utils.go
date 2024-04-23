@@ -32,12 +32,14 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/kubernetes/test/e2e/framework"
+	e2edebug "k8s.io/kubernetes/test/e2e/framework/debug"
 	e2ekubectl "k8s.io/kubernetes/test/e2e/framework/kubectl"
 	e2erc "k8s.io/kubernetes/test/e2e/framework/rc"
+	"k8s.io/kubernetes/test/e2e/framework/resource"
 	e2eservice "k8s.io/kubernetes/test/e2e/framework/service"
 	testutils "k8s.io/kubernetes/test/utils"
 
-	"github.com/onsi/ginkgo"
+	ginkgo "github.com/onsi/ginkgo/v2"
 
 	scaleclient "k8s.io/client-go/scale"
 	imageutils "k8s.io/kubernetes/test/utils/image"
@@ -60,12 +62,12 @@ const (
 	customMetricName                = "QPS"
 	serviceInitializationTimeout    = 2 * time.Minute
 	serviceInitializationInterval   = 15 * time.Second
-	// TODO(jbartosik): put the image in a VPA project
-	stressImage = "gcr.io/jbartosik-gke-dev/stress:0.10"
+	stressImage                     = "gcr.io/google-containers/stress:v1"
 )
 
 var (
 	resourceConsumerImage = imageutils.GetE2EImage(imageutils.ResourceConsumer)
+	stressCommand         = []string{"/stress", "--mem-total", "10000000000", "--logtostderr", "--mem-alloc-size", "8000"}
 )
 
 var (
@@ -326,9 +328,9 @@ func (rc *ResourceConsumer) CleanUp() {
 	// Wait some time to ensure all child goroutines are finished.
 	time.Sleep(10 * time.Second)
 	kind := rc.kind.GroupKind()
-	framework.ExpectNoError(framework.DeleteResourceAndWaitForGC(rc.clientSet, kind, rc.nsName, rc.name))
+	framework.ExpectNoError(resource.DeleteResourceAndWaitForGC(context.TODO(), rc.clientSet, kind, rc.nsName, rc.name))
 	framework.ExpectNoError(rc.clientSet.CoreV1().Services(rc.nsName).Delete(context.TODO(), rc.name, metav1.DeleteOptions{}))
-	framework.ExpectNoError(framework.DeleteResourceAndWaitForGC(rc.clientSet, schema.GroupKind{Kind: "ReplicationController"}, rc.nsName, rc.controllerName))
+	framework.ExpectNoError(resource.DeleteResourceAndWaitForGC(context.TODO(), rc.clientSet, schema.GroupKind{Kind: "ReplicationController"}, rc.nsName, rc.controllerName))
 	framework.ExpectNoError(rc.clientSet.CoreV1().Services(rc.nsName).Delete(context.TODO(), rc.controllerName, metav1.DeleteOptions{}))
 }
 
@@ -366,15 +368,15 @@ func runServiceAndWorkloadForResourceConsumer(c clientset.Interface, ns, name st
 
 	switch kind {
 	case KindRC:
-		framework.ExpectNoError(e2erc.RunRC(rcConfig))
+		framework.ExpectNoError(e2erc.RunRC(context.TODO(), rcConfig))
 	case KindDeployment:
 		dpConfig := testutils.DeploymentConfig{
 			RCConfig: rcConfig,
 		}
 		ginkgo.By(fmt.Sprintf("creating deployment %s in namespace %s", dpConfig.Name, dpConfig.Namespace))
-		dpConfig.NodeDumpFunc = framework.DumpNodeDebugInfo
+		dpConfig.NodeDumpFunc = e2edebug.DumpNodeDebugInfo
 		dpConfig.ContainerDumpFunc = e2ekubectl.LogFailedContainers
-		framework.ExpectNoError(testutils.RunDeployment(dpConfig))
+		framework.ExpectNoError(testutils.RunDeployment(context.TODO(), dpConfig))
 	case KindReplicaSet:
 		rsConfig := testutils.ReplicaSetConfig{
 			RCConfig: rcConfig,
@@ -415,19 +417,19 @@ func runServiceAndWorkloadForResourceConsumer(c clientset.Interface, ns, name st
 		Command:   []string{"/agnhost", "resource-consumer-controller", "--consumer-service-name=" + name, "--consumer-service-namespace=" + ns, "--consumer-port=80"},
 		DNSPolicy: &dnsClusterFirst,
 	}
-	framework.ExpectNoError(e2erc.RunRC(controllerRcConfig))
+	framework.ExpectNoError(e2erc.RunRC(context.TODO(), controllerRcConfig))
 
 	// Wait for endpoints to propagate for the controller service.
 	framework.ExpectNoError(framework.WaitForServiceEndpointsNum(
-		c, ns, controllerName, 1, startServiceInterval, startServiceTimeout))
+		context.TODO(), c, ns, controllerName, 1, startServiceInterval, startServiceTimeout))
 }
 
 // runReplicaSet launches (and verifies correctness) of a replicaset.
 func runReplicaSet(config testutils.ReplicaSetConfig) error {
 	ginkgo.By(fmt.Sprintf("creating replicaset %s in namespace %s", config.Name, config.Namespace))
-	config.NodeDumpFunc = framework.DumpNodeDebugInfo
+	config.NodeDumpFunc = e2edebug.DumpNodeDebugInfo
 	config.ContainerDumpFunc = e2ekubectl.LogFailedContainers
-	return testutils.RunReplicaSet(config)
+	return testutils.RunReplicaSet(context.TODO(), config)
 }
 
 func runOomingReplicationController(c clientset.Interface, ns, name string, replicas int) {
@@ -436,6 +438,7 @@ func runOomingReplicationController(c clientset.Interface, ns, name string, repl
 	rcConfig := testutils.RCConfig{
 		Client:      c,
 		Image:       stressImage,
+		Command:     stressCommand,
 		Name:        name,
 		Namespace:   ns,
 		Timeout:     timeoutRC,
@@ -449,7 +452,7 @@ func runOomingReplicationController(c clientset.Interface, ns, name string, repl
 		RCConfig: rcConfig,
 	}
 	ginkgo.By(fmt.Sprintf("Creating deployment %s in namespace %s", dpConfig.Name, dpConfig.Namespace))
-	dpConfig.NodeDumpFunc = framework.DumpNodeDebugInfo
+	dpConfig.NodeDumpFunc = e2edebug.DumpNodeDebugInfo
 	dpConfig.ContainerDumpFunc = e2ekubectl.LogFailedContainers
-	framework.ExpectNoError(testutils.RunDeployment(dpConfig))
+	framework.ExpectNoError(testutils.RunDeployment(context.TODO(), dpConfig))
 }
