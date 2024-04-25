@@ -16,7 +16,7 @@ For example, `--node-group-auto-discovery=label:cluster-autoscaler-enabled=true,
 **NOTE**
 * It is recommended to use a second tag like `cluster-autoscaler-name=<YOUR CLUSTER NAME>` when `cluster-autoscaler-enabled=true` is used across many clusters to prevent Instance Groups from different clusters recognized as the node groups
 * There are no `--nodes` flags passed to cluster-autoscaler because the node groups are automatically discovered by tags
-* No `min/max` values are provided when using this option. cluster-autoscaler will detect the "min" and "max" labels on the Instane Group resource in GCP, adjusting the desired number of nodes within these limits.
+* No `min/max` values are provided when using this option. cluster-autoscaler will detect the "min" and "max" labels on the Instance Group resource in GCP, adjusting the desired number of nodes within these limits.
 * If there are no `min/max` labels on the Instance Group resource, cluster-autoscaler will use the default min/max values of 0 and 1000 respectively.
 ---
 
