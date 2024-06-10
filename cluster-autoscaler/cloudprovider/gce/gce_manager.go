@@ -455,11 +455,17 @@ func (m *gceManagerImpl) fetchAutoMigs() error {
 					return err
 				} else {
 					// Skip migs whose instance templates don't have the corresponding config labels
+					var labelMismatch bool
 					for k, v := range cfg.Labels {
 						if instanceTemplate.Properties.Labels[k] != v {
 							klog.V(4).Infof("Instance template %s missing label %s=%s.\nIgnoring mig %s", instanceTemplate.Name, k, v, mig.GceRef().Name)
-							continue
+							labelMismatch = true
+							break
 						}
+					}
+
+					if labelMismatch {
+						continue
 					}
 
 					// Update the min size of mig config based on labels in the instance template
@@ -478,6 +484,12 @@ func (m *gceManagerImpl) fetchAutoMigs() error {
 						} else {
 							cfg.MaxSize = m
 						}
+					}
+
+					// Rebuild the mig with updated min and max sizes
+					mig, err = m.buildMigFromAutoCfg(link, cfg)
+					if err != nil {
+						return err
 					}
 				}
 			}
