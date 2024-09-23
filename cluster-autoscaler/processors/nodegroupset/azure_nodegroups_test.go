@@ -21,6 +21,7 @@ import (
 
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 	testprovider "k8s.io/autoscaler/cluster-autoscaler/cloudprovider/test"
+	"k8s.io/autoscaler/cluster-autoscaler/config"
 	"k8s.io/autoscaler/cluster-autoscaler/context"
 	. "k8s.io/autoscaler/cluster-autoscaler/utils/test"
 	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework"
@@ -29,7 +30,7 @@ import (
 )
 
 func TestIsAzureNodeInfoSimilar(t *testing.T) {
-	comparator := CreateAzureNodeInfoComparator([]string{"example.com/ready"})
+	comparator := CreateAzureNodeInfoComparator([]string{"example.com/ready"}, config.NodeGroupDifferenceRatios{})
 	n1 := BuildTestNode("node1", 1000, 2000)
 	n1.ObjectMeta.Labels["test-label"] = "test-value"
 	n1.ObjectMeta.Labels["character"] = "thing"
@@ -66,21 +67,38 @@ func TestIsAzureNodeInfoSimilar(t *testing.T) {
 	n1.ObjectMeta.Labels["agentpool"] = "foo"
 	n2.ObjectMeta.Labels["agentpool"] = "bar"
 	checkNodesSimilar(t, n1, n2, comparator, true)
+	// Different creationSource
+	n1.ObjectMeta.Labels["creationSource"] = "aks-aks-nodepool2-vmss"
+	n2.ObjectMeta.Labels["creationSource"] = "aks-aks-nodepool3-vmss"
+	checkNodesSimilar(t, n1, n2, comparator, true)
+	// Different node image version
+	n1.ObjectMeta.Labels["kubernetes.azure.com/node-image-version"] = "AKSUbuntu-1804gen2-2021.01.28"
+	n2.ObjectMeta.Labels["kubernetes.azure.com/node-image-version"] = "AKSUbuntu-1804gen2-2022.01.30"
+	checkNodesSimilar(t, n1, n2, comparator, true)
 	// Custom label
 	n1.ObjectMeta.Labels["example.com/ready"] = "true"
 	n2.ObjectMeta.Labels["example.com/ready"] = "false"
+	checkNodesSimilar(t, n1, n2, comparator, true)
+	// One node with aksConsolidatedAdditionalProperties label
+	n1.ObjectMeta.Labels[aksConsolidatedAdditionalProperties] = "foo"
+	checkNodesSimilar(t, n1, n2, comparator, true)
+	// Same aksConsolidatedAdditionalProperties
+	n2.ObjectMeta.Labels[aksConsolidatedAdditionalProperties] = "foo"
+	checkNodesSimilar(t, n1, n2, comparator, true)
+	// Different aksConsolidatedAdditionalProperties label
+	n2.ObjectMeta.Labels[aksConsolidatedAdditionalProperties] = "bar"
 	checkNodesSimilar(t, n1, n2, comparator, true)
 }
 
 func TestFindSimilarNodeGroupsAzureBasic(t *testing.T) {
 	context := &context.AutoscalingContext{}
 	ni1, ni2, ni3 := buildBasicNodeGroups(context)
-	processor := &BalancingNodeGroupSetProcessor{Comparator: CreateAzureNodeInfoComparator([]string{})}
+	processor := &BalancingNodeGroupSetProcessor{Comparator: CreateAzureNodeInfoComparator([]string{}, config.NodeGroupDifferenceRatios{})}
 	basicSimilarNodeGroupsTest(t, context, processor, ni1, ni2, ni3)
 }
 
 func TestFindSimilarNodeGroupsAzureByLabel(t *testing.T) {
-	processor := &BalancingNodeGroupSetProcessor{Comparator: CreateAzureNodeInfoComparator([]string{})}
+	processor := &BalancingNodeGroupSetProcessor{Comparator: CreateAzureNodeInfoComparator([]string{}, config.NodeGroupDifferenceRatios{})}
 	context := &context.AutoscalingContext{}
 
 	n1 := BuildTestNode("n1", 1000, 1000)

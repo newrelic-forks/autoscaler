@@ -99,32 +99,32 @@ func (mr *MockVMSetMockRecorder) DetachDisk(ctx, nodeName, diskMap interface{}) 
 }
 
 // EnsureBackendPoolDeleted mocks base method.
-func (m *MockVMSet) EnsureBackendPoolDeleted(service *v1.Service, backendPoolID, vmSetName string, backendAddressPools *[]network.BackendAddressPool, deleteFromVMSet bool) (bool, error) {
+func (m *MockVMSet) EnsureBackendPoolDeleted(service *v1.Service, backendPoolIDs []string, vmSetName string, backendAddressPools *[]network.BackendAddressPool, deleteFromVMSet bool) (bool, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "EnsureBackendPoolDeleted", service, backendPoolID, vmSetName, backendAddressPools, deleteFromVMSet)
+	ret := m.ctrl.Call(m, "EnsureBackendPoolDeleted", service, backendPoolIDs, vmSetName, backendAddressPools, deleteFromVMSet)
 	ret0, _ := ret[0].(bool)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // EnsureBackendPoolDeleted indicates an expected call of EnsureBackendPoolDeleted.
-func (mr *MockVMSetMockRecorder) EnsureBackendPoolDeleted(service, backendPoolID, vmSetName, backendAddressPools, deleteFromVMSet interface{}) *gomock.Call {
+func (mr *MockVMSetMockRecorder) EnsureBackendPoolDeleted(service, backendPoolIDs, vmSetName, backendAddressPools, deleteFromVMSet interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "EnsureBackendPoolDeleted", reflect.TypeOf((*MockVMSet)(nil).EnsureBackendPoolDeleted), service, backendPoolID, vmSetName, backendAddressPools, deleteFromVMSet)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "EnsureBackendPoolDeleted", reflect.TypeOf((*MockVMSet)(nil).EnsureBackendPoolDeleted), service, backendPoolIDs, vmSetName, backendAddressPools, deleteFromVMSet)
 }
 
 // EnsureBackendPoolDeletedFromVMSets mocks base method.
-func (m *MockVMSet) EnsureBackendPoolDeletedFromVMSets(vmSetNamesMap map[string]bool, backendPoolID string) error {
+func (m *MockVMSet) EnsureBackendPoolDeletedFromVMSets(vmSetNamesMap map[string]bool, backendPoolIDs []string) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "EnsureBackendPoolDeletedFromVMSets", vmSetNamesMap, backendPoolID)
+	ret := m.ctrl.Call(m, "EnsureBackendPoolDeletedFromVMSets", vmSetNamesMap, backendPoolIDs)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // EnsureBackendPoolDeletedFromVMSets indicates an expected call of EnsureBackendPoolDeletedFromVMSets.
-func (mr *MockVMSetMockRecorder) EnsureBackendPoolDeletedFromVMSets(vmSetNamesMap, backendPoolID interface{}) *gomock.Call {
+func (mr *MockVMSetMockRecorder) EnsureBackendPoolDeletedFromVMSets(vmSetNamesMap, backendPoolIDs interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "EnsureBackendPoolDeletedFromVMSets", reflect.TypeOf((*MockVMSet)(nil).EnsureBackendPoolDeletedFromVMSets), vmSetNamesMap, backendPoolID)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "EnsureBackendPoolDeletedFromVMSets", reflect.TypeOf((*MockVMSet)(nil).EnsureBackendPoolDeletedFromVMSets), vmSetNamesMap, backendPoolIDs)
 }
 
 // EnsureHostInPool mocks base method.
@@ -414,6 +414,21 @@ func (m *MockVMSet) UpdateVM(ctx context.Context, nodeName types.NodeName) error
 func (mr *MockVMSetMockRecorder) UpdateVM(ctx, nodeName interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateVM", reflect.TypeOf((*MockVMSet)(nil).UpdateVM), ctx, nodeName)
+}
+
+// UpdateVMAsync mocks base method.
+func (m *MockVMSet) UpdateVMAsync(ctx context.Context, nodeName types.NodeName) (*azure.Future, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UpdateVMAsync", ctx, nodeName)
+	ret0, _ := ret[0].(*azure.Future)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// UpdateVMAsync indicates an expected call of UpdateVMAsync.
+func (mr *MockVMSetMockRecorder) UpdateVMAsync(ctx, nodeName interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateVMAsync", reflect.TypeOf((*MockVMSet)(nil).UpdateVMAsync), ctx, nodeName)
 }
 
 // WaitForUpdateResult mocks base method.

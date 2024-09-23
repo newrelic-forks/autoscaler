@@ -33,6 +33,7 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 	"k8s.io/autoscaler/cluster-autoscaler/config"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/errors"
+	"k8s.io/autoscaler/cluster-autoscaler/utils/gpu"
 )
 
 const (
@@ -128,6 +129,12 @@ func (p *provider) GPULabel() string {
 	return GPULabel
 }
 
+// GetNodeGpuConfig returns the label, type and resource name for the GPU added to node. If node doesn't have
+// any GPUs, it returns nil.
+func (p *provider) GetNodeGpuConfig(node *corev1.Node) *cloudprovider.GpuConfig {
+	return gpu.GetNodeGPUFromCloudProvider(p, node)
+}
+
 func newProvider(
 	name string,
 	rl *cloudprovider.ResourceLimiter,
@@ -151,6 +158,8 @@ func BuildClusterAPI(opts config.AutoscalingOptions, do cloudprovider.NodeGroupD
 	if err != nil {
 		klog.Fatalf("cannot build management cluster config: %v", err)
 	}
+	managementConfig.QPS = float32(opts.KubeClientQPS)
+	managementConfig.Burst = opts.KubeClientBurst
 
 	workloadKubeconfig := opts.KubeConfigPath
 
@@ -158,6 +167,8 @@ func BuildClusterAPI(opts config.AutoscalingOptions, do cloudprovider.NodeGroupD
 	if err != nil {
 		klog.Fatalf("cannot build workload cluster config: %v", err)
 	}
+	workloadConfig.QPS = float32(opts.KubeClientQPS)
+	workloadConfig.Burst = opts.KubeClientBurst
 
 	// Grab a dynamic interface that we can create informers from
 	managementClient, err := dynamic.NewForConfig(managementConfig)

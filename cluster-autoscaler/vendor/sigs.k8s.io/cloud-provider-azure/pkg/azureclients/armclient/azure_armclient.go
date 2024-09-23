@@ -75,7 +75,7 @@ func sender() autorest.Sender {
 				Timeout:   30 * time.Second, // the same as default transport
 				KeepAlive: 30 * time.Second, // the same as default transport
 			}).DialContext,
-			ForceAttemptHTTP2:     true,             // always attempt HTTP/2 even though custom dialer is provided
+			ForceAttemptHTTP2:     false,            // respect custom dialer (default is true)
 			MaxIdleConns:          100,              // Zero means no limit, the same as default transport
 			MaxIdleConnsPerHost:   100,              // Default is 2, ref:https://cs.opensource.google/go/go/+/go1.18.4:src/net/http/transport.go;l=58
 			IdleConnTimeout:       90 * time.Second, // the same as default transport
@@ -545,7 +545,7 @@ func (c *Client) PutResourceAsync(ctx context.Context, resourceID string, parame
 	future, resp, rErr := c.SendAsync(ctx, request)
 	defer c.CloseResponse(ctx, resp)
 	if rErr != nil {
-		klog.V(5).Infof("Received error in %s: resourceID: %s, error: %s", "put.send", resourceID, err)
+		klog.V(5).Infof("Received error in %s: resourceID: %s, error: %s", "put.send", resourceID, rErr.Error())
 		return nil, rErr
 	}
 
@@ -588,7 +588,7 @@ func (c *Client) DeleteResource(ctx context.Context, resourceID string, decorato
 		return nil
 	}
 	if err := future.WaitForCompletionRef(ctx, c.client); err != nil {
-		klog.V(5).Infof("Received error in %s: resourceID: %s, error: %s", "delete.wait", resourceID, clientErr.Error())
+		klog.V(5).Infof("Received error in %s: resourceID: %s, error: %s", "delete.wait", resourceID, err)
 		return retry.NewError(true, err)
 	}
 
