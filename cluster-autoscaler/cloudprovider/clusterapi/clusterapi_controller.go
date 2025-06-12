@@ -43,6 +43,7 @@ import (
 
 const (
 	machineProviderIDIndex     = "machineProviderIDIndex"
+	machineMachinePoolUIDIndex = "machineMachinePoolUIDIndex"
 	machinePoolProviderIDIndex = "machinePoolProviderIDIndex"
 	nodeProviderIDIndex        = "nodeProviderIDIndex"
 	defaultCAPIGroup           = "cluster.x-k8s.io"
@@ -133,6 +134,39 @@ func indexMachineByProviderID(obj interface{}) ([]string, error) {
 	}
 
 	return []string{string(normalizedProviderString(providerID))}, nil
+}
+
+func indexMachineByMachinePoolUID(obj interface{}) ([]string, error) {
+	u, ok := obj.(*unstructured.Unstructured)
+	if !ok {
+		return nil, nil
+	}
+
+	ownerReferences, found, err := unstructured.NestedSlice(u.Object, "metadata", "ownerReferences")
+	if err != nil || !found {
+		return nil, fmt.Errorf("error accessing ownerReferences: %v", err)
+	}
+
+	for _, owner := range ownerReferences {
+		ownerMap, ok := owner.(map[string]interface{})
+		if !ok {
+			continue // Skip if the value isn't a map
+		}
+
+		kind, found, err := unstructured.NestedString(ownerMap, "kind")
+		if err != nil || !found || kind != "MachinePool" {
+			continue // Skip if not found or not a MachinePool
+		}
+
+		uid, found, err := unstructured.NestedString(ownerMap, "uid")
+		if err != nil || !found {
+			continue // Skip if name isn't found
+		}
+
+		return []string{uid}, nil
+	}
+
+	return nil, nil // Return nil if no MachinePool UID is found
 }
 
 func indexNodeByProviderID(obj interface{}) ([]string, error) {
@@ -522,7 +556,8 @@ func newMachineController(
 	}
 
 	if err := machineInformer.Informer().GetIndexer().AddIndexers(cache.Indexers{
-		machineProviderIDIndex: indexMachineByProviderID,
+		machineProviderIDIndex:     indexMachineByProviderID,
+		machineMachinePoolUIDIndex: indexMachineByMachinePoolUID,
 	}); err != nil {
 		return nil, fmt.Errorf("cannot add machine indexer: %v", err)
 	}
@@ -589,27 +624,7 @@ func getAPIGroupPreferredVersion(client discovery.DiscoveryInterface, APIGroup s
 }
 
 func (c *machineController) scalableResourceProviderIDs(scalableResource *unstructured.Unstructured) ([]string, error) {
-	if scalableResource.GetKind() == machinePoolKind {
-		return c.findMachinePoolProviderIDs(scalableResource)
-	}
 	return c.findScalableResourceProviderIDs(scalableResource)
-}
-
-func (c *machineController) findMachinePoolProviderIDs(scalableResource *unstructured.Unstructured) ([]string, error) {
-	var providerIDs []string
-
-	providerIDList, found, err := unstructured.NestedStringSlice(scalableResource.UnstructuredContent(), "spec", "providerIDList")
-	if err != nil {
-		return nil, err
-	}
-	if found {
-		providerIDs = providerIDList
-	} else {
-		klog.Warningf("Machine Pool %q has no providerIDList", scalableResource.GetName())
-	}
-
-	klog.V(4).Infof("nodegroup %s has %d nodes: %v", scalableResource.GetName(), len(providerIDs), providerIDs)
-	return providerIDs, nil
 }
 
 func (c *machineController) findScalableResourceProviderIDs(scalableResource *unstructured.Unstructured) ([]string, error) {
@@ -820,6 +835,24 @@ func (c *machineController) listMachinesForScalableResource(r *unstructured.Unst
 		}
 
 		return listResources(c.machineInformer.Lister().ByNamespace(r.GetNamespace()), clusterNameFromResource(r), selector)
+	case machinePoolKind:
+		uid, found, err := unstructured.NestedString(r.UnstructuredContent(), "metadata", "uid")
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			return nil, fmt.Errorf("expected field metadata.uid on scalable resource type")
+		}
+
+		objs, err := c.machineInformer.Informer().GetIndexer().ByIndex(machineMachinePoolUIDIndex, uid)
+		if err != nil {
+			return nil, err
+		}
+		machines, err := assertUnstructuredList(objs)
+		if err != nil {
+			return nil, err
+		}
+		return machines, nil
 	default:
 		return nil, fmt.Errorf("unknown scalable resource kind %s", r.GetKind())
 	}
@@ -946,4 +979,18 @@ func (c *machineController) getInfrastructureResource(resource schema.GroupVersi
 		return nil, err
 	}
 	return infra, err
+}
+
+func assertUnstructuredList(interfaceList []interface{}) ([]*unstructured.Unstructured, error) {
+	var unstructuredList []*unstructured.Unstructured
+
+	for _, item := range interfaceList {
+		u, ok := item.(*unstructured.Unstructured)
+		if !ok {
+			return nil, fmt.Errorf("error: expected *unstructured.Unstructured, but got %T", item)
+		}
+		unstructuredList = append(unstructuredList, u)
+	}
+
+	return unstructuredList, nil
 }
